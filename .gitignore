@@ -1,0 +1,12 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# OS 垃圾檔
+.DS_Store
+Thumbs.db
+
+# 之後如果有 log or temp
+logs/
+tmp/
