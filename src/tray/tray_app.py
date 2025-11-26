@@ -77,6 +77,8 @@ class SentryConsoleWindow(QWidget):
         self.setWindowTitle("Sentry 控制台 v1（雛型）")
         # 設定視窗的初始大小（resize），寬 900 像素，高 600 像素。
         self.resize(900, 600)
+        # 啟用（setAcceptDrops）主視窗的拖曳接收功能（True），這是 PySide6 處理拖曳事件的第一步。
+        self.setAcceptDrops(True)
 
         # # TODO: 這裡的註解將使用通俗比喻來解釋資料結構。
         # 準備一個叫「current_projects」的空籃子（[]），
@@ -310,13 +312,6 @@ class SentryConsoleWindow(QWidget):
             # 把輸入框和按鈕儲存到籃子中（未來用索引 i 存取）
             self.new_input_fields.append(output_edit)
             self.new_browse_buttons.append(output_button)
-
-            # 讓第 2 和第 3 個寫入檔預設隱藏
-            if i >= 2:
-                output_row.setContentsMargins(0, 0, 0, 0) # 移除內邊距，讓它完全隱藏
-                output_edit.setVisible(False)
-                output_label.setVisible(False)
-                output_button.setVisible(False)
 
 
         # --- 事件連結 (Signal/Slot) ---
@@ -646,22 +641,16 @@ class SentryConsoleWindow(QWidget):
         """
         # --- 1. 獲取所有路徑 ---
         # 獲取（get）專案資料夾路徑，並去除空格（strip）。
-        # new_input_fields[0] = Project Folder
         folder = self.new_input_fields[0].text().strip()
         # 獲取（get）主要輸出檔路徑（索引 1），並去除空格（strip）。
-        # new_input_fields[1] = Primary Output File
         primary_output_file = self.new_input_fields[1].text().strip()
 
-        # # DEFENSE: 這裡用 DEFENSE 標籤標註，這是一個防呆檢查。
-        # 用「if」來判斷：如果（if）資料夾或主輸出檔案是空的...
+        # # DEFENSE: 防呆檢查。
         if not folder or not primary_output_file:
-            # 用「return」結束。
             return
 
-        # 為了從路徑中取出專案名稱，我們需要 導入（import）Path 工具。
         from pathlib import Path
-        # 建立一個 Path 物件，並取出路徑的最後一層名字（name）。
-        # 如果最後一層名字是空的，就用整個路徑（folder）代替。
+
         name = Path(folder).name or folder
 
         # 獲取所有額外的輸出檔路徑（索引 2 和 3）。
@@ -669,48 +658,50 @@ class SentryConsoleWindow(QWidget):
             self.new_input_fields[i].text().strip()
             for i in range(2, 4) if self.new_input_fields[i].text().strip()
         ]
+        
+        # --- 核心 UX 修正：精簡提示內容 ---
+        # 提取主目標的檔名（filename）和額外目標的數量（count）。
+        primary_output_filename = Path(primary_output_file).name
+        extra_count = len(extra_targets)
+        
+        # 建立提示訊息：
+        ux_message = (
+            f"✓ 已送出新增請求（Stub）。\n"
+            f"主目標檔名: {primary_output_filename}\n"
+            f"額外目標數量: {extra_count} 個\n\n"
+            "目前僅記錄請求，不會寫入檔案或更新列表。"
+        )
+        # 模擬 Adapter 接收路徑：
+        targets_msg = f"（額外目標：{extra_count} 個）"
 
         # 嘗試（try）執行可能出錯的程式碼。
         try:
             # 呼叫（call）後端（adapter）的 add_project 函式，傳入名稱、資料夾和**主要輸出檔**。
-            # 目前 Stub 版本不傳遞額外的 extra_targets。
             adapter.add_project(name=name, path=folder, output_file=primary_output_file)
-
-            # 由於新增成功，我們在這裡可以 print 出多個 targets 的訊息，模擬後端接收。
-            targets_msg = f"（額外目標：{', '.join(extra_targets) or '無'}）"
 
         # 如果在 try 區塊發生了 adapter.BackendError 錯誤...
         except adapter.BackendError as e:
-            # D-2：失敗 → 用底部訊息列顯示錯誤（紅色）
-            # 呼叫（call）_set_status_message，顯示錯誤訊息（e），並設定 level 為 "error"。
             self._set_status_message(f"新增專案失敗：{e}", level="error")
-            return # 用「return」結束。
+            return
 
-        # 如果 try 區塊成功，就顯示一個資訊對話框（QMessageBox.information）。
+        # 如果 try 區塊成功，就顯示一個精簡的資訊對話框（QMessageBox.information）。
         QMessageBox.information(
             self,
             "新增專案（Stub）",
-            f"✓ 已送出新增請求（Stub）。\n"
-            f"主目標：{primary_output_file}\n"
-            f"額外目標：{', '.join(extra_targets) or '無'}\n"
-            "目前僅記錄請求，不會寫入檔案或更新列表。",
+            ux_message,
         )
-        # 呼叫（call）_set_status_message，顯示成功提示，並設定 level 為 "success"。
+        # 呼叫（call）_set_status_message，顯示成功的提示訊息。
         self._set_status_message(
             f"✓ 已送出新增請求（Stub）。{targets_msg}",
             level="success",
         )
 
         # --- 成功後清空欄位 + 重繪列表 ---
-        # 這裡我們使用 for 循環，清空所有 new_input_fields 列表中的輸入框。
         for edit in self.new_input_fields:
             edit.clear()
 
-        # 呼叫（call）_update_new_project_submit_state 函式，讓按鈕回到 disabled 狀態。
         self._update_new_project_submit_state()
-        # 呼叫（call）_reload_projects_from_backend 函式，重新載入列表。
         self._reload_projects_from_backend()
-        # 呼叫（call）_update_detail_panel 函式，清空右側詳情面板。
         self._update_detail_panel(None)
 
     # 這裡，我們用「def」來定義（define）更新新增專案按鈕狀態的函式。
@@ -770,6 +761,92 @@ class SentryConsoleWindow(QWidget):
         ]
         # 用換行符號（\n）連接（join）文字籃子，並設定（setText）到詳情標籤上。
         self.detail_label.setText("\n".join(text_lines))
+
+    def dragEnterEvent(self, event) -> None:
+        """
+        處理拖曳進入事件：設定視窗為可接受拖曳。
+        """
+        if event.mimeData().hasUrls():
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event) -> None:
+        """
+        處理放下事件 (最終版)：
+        1. 多檔智能路由。
+        2. 類型白名單過濾。
+        3. [新增] 防止重複路徑填入。
+        """
+        from pathlib import Path
+        from PySide6.QtWidgets import QLineEdit
+        
+        # DEFENSE: 檢查事件中是否有路徑（URL）資訊。
+        if not event.mimeData().hasUrls():
+            event.ignore()
+            return
+            
+        # 獲取所有拖曳的路徑列表。
+        urls = event.mimeData().urls()
+        
+        # 定義允許的寫入檔副檔名（白名單）。
+        VALID_EXTENSIONS = {'.md', '.markdown', '.txt', '.log'}
+        
+        filled_count = 0
+        
+        # 迴圈處理每一個拖曳進來的路徑。
+        for url in urls:
+            path_str = url.toLocalFile()
+            path_obj = Path(path_str)
+            
+            # [新增] 防呆檢查：檢查路徑是否已經存在於任何一個輸入框中
+            # 我們建立一個集合，包含所有目前輸入框內的文字（去除空格）
+            current_values = {f.text().strip() for f in self.new_input_fields}
+            
+            if path_str in current_values:
+                # 如果已經存在，就直接跳過，不處理這個檔案
+                continue
+
+            # 1. 處理資料夾 -> 嘗試填入專案資料夾 (索引 0)
+            if path_obj.is_dir():
+                folder_input = self.new_input_fields[0]
+                if not folder_input.text().strip():
+                    folder_input.setText(path_str)
+                    filled_count += 1
+            
+            # 2. 處理檔案 -> 先檢查副檔名，再嘗試填入寫入檔
+            elif path_obj.is_file():
+                if path_obj.suffix.lower() in VALID_EXTENSIONS:
+                    for i in range(1, 4):
+                        file_input = self.new_input_fields[i]
+                        if not file_input.text().strip():
+                            file_input.setText(path_str)
+                            filled_count += 1
+                            break 
+
+        # --- 總結處理結果 ---
+        if filled_count > 0:
+            event.acceptProposedAction()
+            self._update_new_project_submit_state()
+            msg = f"批量拖曳成功：已填入 {filled_count} 個欄位。"
+            self._set_status_message(msg, level="success")
+        else:
+            # 可能是欄位滿了、類型不對、或者是重複的路徑
+            self._set_status_message("拖曳無效：沒有填入任何欄位 (重複、格式不符或欄位已滿)。", level="error")
+            event.ignore()
+
+        # --- 總結處理結果 ---
+        if filled_count > 0:
+            event.acceptProposedAction()
+            self._update_new_project_submit_state()
+            
+            # 簡化後的成功訊息。
+            msg = f"批量拖曳成功：已填入 {filled_count} 個欄位。"
+            self._set_status_message(msg, level="success")
+        else:
+            # 如果一個都沒填進去（可能是欄位滿了，或是所有檔案都被過濾了）。
+            self._set_status_message("拖曳無效：沒有可填入的欄位，或檔案格式不支援。", level="error")
+            event.ignore()
 
     # ---------------------------
     # 標籤轉換（之後可以抽成 i18n）
