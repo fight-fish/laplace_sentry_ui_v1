@@ -51,9 +51,11 @@ from PySide6.QtWidgets import (
     QInputDialog,  # (用來跳出輸入框)
     QListWidgetItem,  # (用來在列表中顯示單一項目)
     QListWidget,  # (用來顯示列表的元件)
-    QDialogButtonBox,  # (用來顯示對話框按鈕列
-    QDialog,  # (用來顯示對話框
+    QDialogButtonBox,  # (用來顯示對話框按鈕列)
+    QDialog,  # (用來顯示對話框)
+    QCheckBox,
 )
+
 # 導入 PySide6 的圖形介面（QtGui）中的 QIcon（圖標）、QAction（動作）和 QColor（顏色）等。
 from PySide6.QtGui import QIcon, QAction, QColor, QPalette
 
@@ -325,11 +327,29 @@ class SentryConsoleWindow(QWidget):
         # 加入一個 16 像素的空白間距（addSpacing），將詳情和新增區隔開。
         layout.addSpacing(16)
 
-        # --- 下半部：新增專案（Stub）區 ---
-        # 建立新增專案區塊的標題。
+# --- 下半部：新增專案區 ---
+        # 建立一個水平佈局，用來放標題和模式開關
+        title_layout = QHBoxLayout()
+        
+        # 標題
         title_label = QLabel("新增專案")
-        # 把標題加入（addWidget）到垂直佈局中。
-        layout.addWidget(title_label)
+        # 設定標題字體加粗，讓它明顯一點
+        font = title_label.font()
+        font.setBold(True)
+        title_label.setFont(font)
+        
+        # 模式開關 (預設不勾選)
+        self.mode_checkbox = QCheckBox("自訂別名 (自由模式)")
+        # 綁定事件：當勾選狀態改變時，呼叫切換函式 (稍後實作)
+        self.mode_checkbox.toggled.connect(self._toggle_input_mode)
+
+        # 組合
+        title_layout.addWidget(title_label)
+        title_layout.addStretch(1) # 中間塞彈簧，把開關推到右邊
+        title_layout.addWidget(self.mode_checkbox)
+
+        # 把這個水平佈局加入主垂直佈局
+        layout.addLayout(title_layout)
 
         # 這是專門用來放「專案資料夾」和「寫入檔路徑」輸入框的垂直佈局
         self.new_project_input_layout = QVBoxLayout()
@@ -363,6 +383,26 @@ class SentryConsoleWindow(QWidget):
         self.new_input_fields: list[QLineEdit] = []
         # 建立一個叫 new_browse_buttons 的「空籃子」（List），用來存放所有瀏覽按鈕物件。
         self.new_browse_buttons: list[QPushButton] = []
+
+        # --- [Task I] 1. 建立別名輸入列 (預設隱藏) ---
+        # 我們用一個 Widget 把整列包起來，方便之後直接控制整列的顯示/隱藏
+        self.alias_container = QWidget()
+        alias_layout = QHBoxLayout(self.alias_container)
+        # 設定邊距為 0，讓它看起來像原生佈局的一部分
+        alias_layout.setContentsMargins(0, 0, 0, 0)
+        
+        alias_label = QLabel("專案別名：")
+        self.alias_edit = QLineEdit()
+        self.alias_edit.setPlaceholderText("可選：自訂顯示名稱 (若留空則使用資料夾名)")
+        
+        alias_layout.addWidget(alias_label)
+        alias_layout.addWidget(self.alias_edit)
+        
+        # 加入到主垂直佈局的最上方
+        self.new_project_input_layout.addWidget(self.alias_container)
+        
+        # 預設隱藏
+        self.alias_container.setVisible(False)
         
         # 專案資料夾列 (索引 0)
         # 建立水平佈局（folder_row）
@@ -427,6 +467,14 @@ class SentryConsoleWindow(QWidget):
         # 建立一個拉伸因子，確保這塊輸入區的內容可以推開。
         self.new_project_input_layout.addStretch(1)
 
+    def _toggle_input_mode(self, checked: bool) -> None:
+        """切換輸入模式：控制別名欄位的顯隱"""
+        # 控制容器的顯示/隱藏
+        self.alias_container.setVisible(checked)
+        
+        # 如果切換回一般模式 (unchecked)，我們主動清空別名欄位，避免殘留舊資料
+        if not checked:
+            self.alias_edit.clear()
 
 # 這裡，我們用「def」來定義（define）建立底部面板的函式。
     def _build_bottom_panel(self) -> QFrame:
@@ -894,7 +942,7 @@ class SentryConsoleWindow(QWidget):
     def _on_submit_new_project(self) -> None:
         """
         按下「確認新增」時呼叫：
-        - 處理輸入資料
+        - 處理輸入資料 (支援自訂別名)
         - 呼叫後端 (含重名自動重試邏輯)
         - 更新 UI
         """
@@ -907,8 +955,20 @@ class SentryConsoleWindow(QWidget):
             return
 
         from pathlib import Path
-        # 預設名稱：取資料夾名稱
+        
+        # --- 決定專案名稱 (Task I 核心邏輯) ---
+        # 1. 先計算預設名稱 (資料夾名)
         default_name = Path(folder).name or folder
+        
+        # 2. 檢查是否啟用自由模式且有輸入別名
+        alias_input = self.alias_edit.text().strip()
+        use_alias = self.mode_checkbox.isChecked() and bool(alias_input)
+        
+        # 3. 設定初始嘗試的名字
+        if use_alias:
+            current_name = alias_input
+        else:
+            current_name = default_name
 
         # 獲取額外目標 (目前僅用於顯示資訊，尚未寫入)
         extra_targets = [
@@ -922,10 +982,7 @@ class SentryConsoleWindow(QWidget):
         targets_msg = f"（額外目標：{extra_count} 個）"
 
         # --- 核心 UX 優化：重名自動重試迴圈 ---
-        # 初始嘗試的名字
-        current_name = default_name
-        
-        while True:
+        while True:            
             try:
                 # 嘗試呼叫後端新增
                 adapter.add_project(name=current_name, path=folder, output_file=primary_output_file)
