@@ -483,6 +483,18 @@ class BackendAdapter:
         if isinstance(result, list):
             return [str(x) for x in result]
         return []
+    
+    def get_current_ignore_patterns(self, uuid: str) -> List[str]:
+        """呼叫 WSL 獲取「目前已啟用」的忽略規則。"""
+        if not uuid:
+            return []
+        
+        # 呼叫剛才新增的後端指令
+        result = self._run_wsl_command("list_ignore_patterns", uuid)
+        
+        if isinstance(result, list):
+            return [str(x) for x in result]
+        return []
 
     # 這裡，我們用「def」來定義（define）更新忽略規則的函式。
     def update_ignore_patterns(self, uuid: str, patterns: List[str]) -> None:
@@ -600,6 +612,10 @@ def trigger_manual_update(uuid: str) -> None:
 def get_ignore_candidates(uuid: str) -> List[str]:
     adapter = _ensure_adapter()
     return adapter.get_ignore_candidates(uuid)
+
+def get_current_ignore_patterns(uuid: str) -> List[str]:
+    adapter = _ensure_adapter()
+    return adapter.get_current_ignore_patterns(uuid)
 
 # 這裡，我們用「def」來定義（define）對外提供的更新忽略規則函式。
 def update_ignore_patterns(uuid: str, patterns: List[str]) -> None:

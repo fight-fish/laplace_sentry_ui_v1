@@ -560,47 +560,36 @@ class SentryConsoleWindow(QWidget):
         proj = self.current_projects[row]
         
         self._set_status_message(f"正在讀取專案 '{proj.name}' 的忽略設定...", level="info")
+        # 強制刷新 UI，避免卡頓感
         QApplication.processEvents()
 
         try:
-            # 2. 從後端讀取資料
+            # 2. 從後端讀取兩份資料：候選名單 & 當前設定
             candidates = adapter.get_ignore_candidates(proj.uuid)
-            # 這裡我們利用 adapter.list_projects 得到的目前設定來做 current
-            # (但為了準確，最好重新讀取一次，這裡我們先簡單做，直接讀取)
-            # 注意：這裡我們需要一個方法獲取「當前已設定的忽略規則」。
-            # 雖然 adapter 有 get_ignore_settings，但那是全域的。
-            # 我們在 daemon 中實作了 list_ignore_candidates，它其實已經回傳了 current + candidates。
-            # 為了 UI 方便，我們假設 candidates 包含所有選項。
-            
-            # 從 candidates 中分辨出哪些是已經被 ignore 的 (這需要後端支援，目前 list_ignore_candidates 回傳的是混合體)
-            # 為了精準，我們需要在 adapter 加一個 list_ignore_patterns (純已忽略)，但為了省事，
-            # 我們直接用 candidates 來操作，預設全部 Unchecked，這是個小缺點。
-            
-            # 【修正策略】為了讓 UI 顯示正確的勾選狀態，我們稍微偷懶一下：
-            # 我們假設 UI 的 proj.ignore_patterns (若有的話) 是準的。
-            # 但目前 ProjectInfo 沒這欄位。
-            # 所以，最好的方式是：相信使用者在對話框的操作。
-            # 我們改為：只顯示 candidates，使用者勾選想要忽略的。
+            current_patterns = set(adapter.get_current_ignore_patterns(proj.uuid))
             
             # 3. 建立並顯示對話框
             dialog = IgnoreSettingsDialog(self, proj.name)
             
-            # TODO: 這裡有一個小技術債：我們目前無法知道「哪些已經被忽略」。
-            # 暫時解法：全部顯示為未勾選，使用者需要重新勾選。
-            # (正確解法是 adapter.list_ignore_patterns，但我們不要一次改太多)
-            dialog.load_patterns(candidates, current=set()) 
+            # 將資料載入對話框，讓它正確顯示勾選狀態
+            dialog.load_patterns(candidates, current=current_patterns)
             
+            # 4. 等待使用者操作
             if dialog.exec() == QDialog.DialogCode.Accepted:
-                # 4. 使用者按了儲存
+                # 使用者按了儲存，獲取最新的勾選結果
                 new_patterns = dialog.get_result()
                 
                 self._set_status_message(f"正在儲存設定並重啟哨兵...", level="info")
                 QApplication.processEvents()
                 
+                # 5. 呼叫後端寫入
                 adapter.update_ignore_patterns(proj.uuid, new_patterns)
                 
                 self._set_status_message(f"✓ 專案 '{proj.name}' 忽略規則已更新。", level="success")
                 QMessageBox.information(self, "更新成功", "忽略規則已更新，哨兵已自動重啟以套用新設定。")
+            else:
+                # 使用者按取消
+                self._set_status_message("已取消編輯忽略規則。", level="info")
 
         except Exception as e:
             self._set_status_message(f"讀取/儲存設定失敗：{e}", level="error")
