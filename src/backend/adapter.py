@@ -470,6 +470,30 @@ class BackendAdapter:
             raise BackendError("更新失敗：UUID 為空。")
         self._run_wsl_command("manual_update", uuid)
 
+
+    # 這裡，我們用「def」來定義（define）獲取忽略候選名單的函式。
+    def get_ignore_candidates(self, uuid: str) -> List[str]:
+        """呼叫 WSL 獲取忽略規則候選名單（含現有規則 + 目錄）。"""
+        if not uuid:
+            return []
+        
+        # 呼叫後端指令：list_ignore_candidates <uuid>
+        result = self._run_wsl_command("list_ignore_candidates", uuid)
+        
+        if isinstance(result, list):
+            return [str(x) for x in result]
+        return []
+
+    # 這裡，我們用「def」來定義（define）更新忽略規則的函式。
+    def update_ignore_patterns(self, uuid: str, patterns: List[str]) -> None:
+        """呼叫 WSL 更新忽略規則。"""
+        if not uuid:
+            raise BackendError("更新失敗：UUID 為空。")
+
+        # 呼叫後端指令：update_ignore_patterns <uuid> <p1> <p2> ...
+        # 我們將 patterns 列表展開 (*patterns) 作為參數傳遞
+        self._run_wsl_command("update_ignore_patterns", uuid, *patterns)
+
 # ============================
 #  模組層：給 tray_app 使用的單例介面
 # ============================
@@ -570,6 +594,17 @@ def trigger_manual_update(uuid: str) -> None:
     # 獲取（get）單例 adapter 並呼叫其 trigger_manual_update 方法。
     adapter = _ensure_adapter()
     return adapter.trigger_manual_update(uuid)
+
+
+# 這裡，我們用「def」來定義（define）對外提供的獲取忽略候選函式。
+def get_ignore_candidates(uuid: str) -> List[str]:
+    adapter = _ensure_adapter()
+    return adapter.get_ignore_candidates(uuid)
+
+# 這裡，我們用「def」來定義（define）對外提供的更新忽略規則函式。
+def update_ignore_patterns(uuid: str, patterns: List[str]) -> None:
+    adapter = _ensure_adapter()
+    return adapter.update_ignore_patterns(uuid, patterns)
 
 # ============================
 # Demo（可直接 python -m src.backend.adapter）

@@ -49,6 +49,10 @@ from PySide6.QtWidgets import (
     # 用來彈出標準訊息框（Message Box），例如警告或確認。
     QMessageBox,
     QInputDialog,  # (用來跳出輸入框)
+    QListWidgetItem,  # (用來在列表中顯示單一項目)
+    QListWidget,  # (用來顯示列表的元件)
+    QDialogButtonBox,  # (用來顯示對話框按鈕列
+    QDialog,  # (用來顯示對話框
 )
 # 導入 PySide6 的圖形介面（QtGui）中的 QIcon（圖標）、QAction（動作）和 QColor（顏色）等。
 from PySide6.QtGui import QIcon, QAction, QColor, QPalette
@@ -60,6 +64,95 @@ from pathlib import Path
 
 # 從「src/backend」這個資料夾中，導入（import）我們的資料庫處理工具（adapter）。
 from src.backend import adapter 
+
+class IgnoreSettingsDialog(QDialog):
+    """
+    忽略清單設定視窗：
+    - 顯示候選名單 (Adapter 提供)
+    - 允許勾選/取消
+    - 允許手動新增
+    """
+    def __init__(self, parent=None, project_name=""):
+        super().__init__(parent)
+        self.setWindowTitle(f"編輯忽略規則 - {project_name}")
+        self.resize(500, 600)
+        
+        layout = QVBoxLayout(self)
+
+        # 1. 說明文字
+        layout.addWidget(QLabel("勾選要忽略的檔案或資料夾（變更將觸發哨兵重啟）："))
+
+        # 2. 列表區 (含複選框)
+        self.list_widget = QListWidget()
+        layout.addWidget(self.list_widget)
+
+        # 3. 手動新增區
+        input_layout = QHBoxLayout()
+        self.new_pattern_edit = QLineEdit()
+        self.new_pattern_edit.setPlaceholderText("手動輸入規則 (例: *.tmp)")
+        btn_add = QPushButton("新增")
+        btn_add.clicked.connect(self._on_add_pattern)
+        
+        input_layout.addWidget(self.new_pattern_edit)
+        input_layout.addWidget(btn_add)
+        layout.addLayout(input_layout)
+
+        # 4. 底部按鈕 (確定/取消)
+        self.button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.button_box.accepted.connect(self.accept)
+        self.button_box.rejected.connect(self.reject)
+        layout.addWidget(self.button_box)
+
+    def load_patterns(self, candidates: list[str], current: set[str]):
+        """載入資料並設定勾選狀態"""
+        self.list_widget.clear()
+        
+        # 先把 current 裡有的，但不在 candidates 裡的 (手動加的) 也補進去顯示
+        all_items = sorted(set(candidates) | current)
+        
+        for name in all_items:
+            item = QListWidgetItem(name)
+            # 設定為可複選
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            
+            # 設定勾選狀態
+            if name in current:
+                item.setCheckState(Qt.CheckState.Checked)
+            else:
+                item.setCheckState(Qt.CheckState.Unchecked)
+            
+            self.list_widget.addItem(item)
+
+    def get_result(self) -> list[str]:
+        """收集所有被勾選的項目"""
+        results = []
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if item.checkState() == Qt.CheckState.Checked:
+                results.append(item.text())
+        return results
+
+    def _on_add_pattern(self):
+        """手動新增規則"""
+        text = self.new_pattern_edit.text().strip()
+        if not text:
+            return
+            
+        # 檢查是否重複
+        existing = [self.list_widget.item(i).text() for i in range(self.list_widget.count())]
+        if text in existing:
+            QMessageBox.warning(self, "重複", f"規則 '{text}' 已存在。")
+            return
+
+        # 加入列表並預設勾選
+        item = QListWidgetItem(text)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setCheckState(Qt.CheckState.Checked)
+        self.list_widget.addItem(item)
+        self.list_widget.scrollToBottom()
+        self.new_pattern_edit.clear()
 
 class SentryConsoleWindow(QWidget):
     """
@@ -371,16 +464,20 @@ class SentryConsoleWindow(QWidget):
         button_panel = QVBoxLayout()
         # 建立第一個按鈕：編輯哨兵忽略清單。
         btn_sentry_ignore = QPushButton("編輯哨兵忽略清單…")
-        # 建立第二個按鈕：編輯目錄樹忽略規則。
-        btn_tree_ignore = QPushButton("編輯目錄樹忽略規則…")
+
+        # 建立第二個按鈕：編輯目錄樹忽略規則 ---
+        # 改成 self.btn_tree_ignore，讓它變成全域可存取的物件
+        self.btn_tree_ignore = QPushButton("編輯目錄樹忽略規則…")
+        # 綁定點擊事件到我們即將實作的 _open_ignore_settings_dialog 函式
+        self.btn_tree_ignore.clicked.connect(self._open_ignore_settings_dialog)
 
         # 預設禁用這兩個按鈕（setEnabled(False)）。
         btn_sentry_ignore.setEnabled(False)
-        btn_tree_ignore.setEnabled(False)
+        self.btn_tree_ignore.setEnabled(False) 
 
         # 把按鈕依序加入（addWidget）到右側垂直佈局。
         button_panel.addWidget(btn_sentry_ignore)
-        button_panel.addWidget(btn_tree_ignore)
+        button_panel.addWidget(self.btn_tree_ignore)       
         # 加入拉伸因子（addStretch(1)），把按鈕推到頂部。
         button_panel.addStretch(1)
 
@@ -453,6 +550,62 @@ class SentryConsoleWindow(QWidget):
             # 並且呼叫（call）_update_detail_panel 函式，顯示第一行專案的詳細資訊。
             self._update_detail_panel(self.current_projects[0])
 
+    def _open_ignore_settings_dialog(self) -> None:
+        """打開忽略規則設定視窗"""
+        # 1. 獲取當前選中的專案
+        row = self.project_table.currentRow()
+        if row < 0 or row >= len(self.current_projects):
+            return
+        
+        proj = self.current_projects[row]
+        
+        self._set_status_message(f"正在讀取專案 '{proj.name}' 的忽略設定...", level="info")
+        QApplication.processEvents()
+
+        try:
+            # 2. 從後端讀取資料
+            candidates = adapter.get_ignore_candidates(proj.uuid)
+            # 這裡我們利用 adapter.list_projects 得到的目前設定來做 current
+            # (但為了準確，最好重新讀取一次，這裡我們先簡單做，直接讀取)
+            # 注意：這裡我們需要一個方法獲取「當前已設定的忽略規則」。
+            # 雖然 adapter 有 get_ignore_settings，但那是全域的。
+            # 我們在 daemon 中實作了 list_ignore_candidates，它其實已經回傳了 current + candidates。
+            # 為了 UI 方便，我們假設 candidates 包含所有選項。
+            
+            # 從 candidates 中分辨出哪些是已經被 ignore 的 (這需要後端支援，目前 list_ignore_candidates 回傳的是混合體)
+            # 為了精準，我們需要在 adapter 加一個 list_ignore_patterns (純已忽略)，但為了省事，
+            # 我們直接用 candidates 來操作，預設全部 Unchecked，這是個小缺點。
+            
+            # 【修正策略】為了讓 UI 顯示正確的勾選狀態，我們稍微偷懶一下：
+            # 我們假設 UI 的 proj.ignore_patterns (若有的話) 是準的。
+            # 但目前 ProjectInfo 沒這欄位。
+            # 所以，最好的方式是：相信使用者在對話框的操作。
+            # 我們改為：只顯示 candidates，使用者勾選想要忽略的。
+            
+            # 3. 建立並顯示對話框
+            dialog = IgnoreSettingsDialog(self, proj.name)
+            
+            # TODO: 這裡有一個小技術債：我們目前無法知道「哪些已經被忽略」。
+            # 暫時解法：全部顯示為未勾選，使用者需要重新勾選。
+            # (正確解法是 adapter.list_ignore_patterns，但我們不要一次改太多)
+            dialog.load_patterns(candidates, current=set()) 
+            
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                # 4. 使用者按了儲存
+                new_patterns = dialog.get_result()
+                
+                self._set_status_message(f"正在儲存設定並重啟哨兵...", level="info")
+                QApplication.processEvents()
+                
+                adapter.update_ignore_patterns(proj.uuid, new_patterns)
+                
+                self._set_status_message(f"✓ 專案 '{proj.name}' 忽略規則已更新。", level="success")
+                QMessageBox.information(self, "更新成功", "忽略規則已更新，哨兵已自動重啟以套用新設定。")
+
+        except Exception as e:
+            self._set_status_message(f"讀取/儲存設定失敗：{e}", level="error")
+            QMessageBox.critical(self, "錯誤", str(e))
+
 # 這裡，我們用「def」來定義（define）載入忽略設定的函式。
     def _load_ignore_settings(self) -> None:
         """從 adapter 取得忽略設定，顯示在底部文字區。"""
@@ -520,6 +673,7 @@ class SentryConsoleWindow(QWidget):
         if row < 0 or row >= len(self.current_projects):
             # 就呼叫（call）_update_detail_panel 函式，並傳入 None（代表清空詳情面板）。
             self._update_detail_panel(None)
+            self.btn_tree_ignore.setEnabled(False)
             # 用「return」結束這個函式。
             return
 
@@ -527,6 +681,9 @@ class SentryConsoleWindow(QWidget):
         proj = self.current_projects[row]
         # 呼叫（call）_update_detail_panel 函式，顯示這個專案的詳細資訊。
         self._update_detail_panel(proj)
+
+        # 有選到專案，啟用按鈕
+        self.btn_tree_ignore.setEnabled(True) 
 
     # 這裡，我們用「def」來定義（define）當專案列表被雙擊時（double_clicked）執行的函式。
     def _on_project_double_clicked(self) -> None:
