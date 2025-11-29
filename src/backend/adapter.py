@@ -456,6 +456,19 @@ class BackendAdapter:
         
         # 成功後不需要回傳值，UI 會自動重刷列表
 
+    # 這裡，我們用「def」來定義（define）刪除專案的函式。
+    def delete_project(self, uuid: str) -> None:
+        """呼叫 WSL 刪除專案。"""
+        if not uuid:
+            raise BackendError("刪除失敗：UUID 為空。")
+        self._run_wsl_command("delete_project", uuid)
+
+    # 這裡，我們用「def」來定義（define）觸發手動更新的函式。
+    def trigger_manual_update(self, uuid: str) -> None:
+        """呼叫 WSL 執行一次手動更新。"""
+        if not uuid:
+            raise BackendError("更新失敗：UUID 為空。")
+        self._run_wsl_command("manual_update", uuid)
 
 # ============================
 #  模組層：給 tray_app 使用的單例介面
@@ -545,6 +558,18 @@ def add_project(name: str, path: str, output_file: str) -> None:
     adapter = _ensure_adapter()
     # 呼叫（call）Adapter 內部的 add_project 函式。
     return adapter.add_project(name, path, output_file)
+
+# 這裡，我們用「def」來定義（define）對外提供的刪除專案函式。
+def delete_project(uuid: str) -> None:
+    # 獲取（get）單例 adapter 並呼叫其 delete_project 方法。
+    adapter = _ensure_adapter()
+    return adapter.delete_project(uuid)
+
+# 這裡，我們用「def」來定義（define）對外提供的觸發手動更新函式。
+def trigger_manual_update(uuid: str) -> None:
+    # 獲取（get）單例 adapter 並呼叫其 trigger_manual_update 方法。
+    adapter = _ensure_adapter()
+    return adapter.trigger_manual_update(uuid)
 
 # ============================
 # Demo（可直接 python -m src.backend.adapter）

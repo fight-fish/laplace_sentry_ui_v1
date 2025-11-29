@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     # 用來彈出標準訊息框（Message Box），例如警告或確認。
     QMessageBox,
+    QInputDialog,  # (用來跳出輸入框)
 )
 # 導入 PySide6 的圖形介面（QtGui）中的 QIcon（圖標）、QAction（動作）和 QColor（顏色）等。
 from PySide6.QtGui import QIcon, QAction, QColor, QPalette
@@ -156,7 +157,12 @@ class SentryConsoleWindow(QWidget):
     def _build_project_table(self) -> QTableWidget:
         # 建立一個表格元件（QTableWidget）。
         table = QTableWidget(self)
-        
+
+        # 設定（set）選單策略為 CustomContextMenu，這樣才能自訂選單。
+        table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        # 綁定（connect）請求選單訊號到我們的處理函式。
+        table.customContextMenuRequested.connect(self._on_table_context_menu)
+                
         # 設定表格的欄位數量（setColumnCount）為 4 個。
         table.setColumnCount(4)
         # 設定水平表頭的標籤（setHorizontalHeaderLabels），依序是欄位名稱。
@@ -228,7 +234,7 @@ class SentryConsoleWindow(QWidget):
 
         # --- 下半部：新增專案（Stub）區 ---
         # 建立新增專案區塊的標題。
-        title_label = QLabel("新增專案（Stub｜目前只顯示 UI，不寫入檔案）")
+        title_label = QLabel("新增專案")
         # 把標題加入（addWidget）到垂直佈局中。
         layout.addWidget(title_label)
 
@@ -242,13 +248,13 @@ class SentryConsoleWindow(QWidget):
 
 
         # 送出按鈕（目前 stub）
-        self.new_project_submit_button = QPushButton("送出新增請求（Stub）")
+        self.new_project_submit_button = QPushButton("確認新增")
         # 預設禁用（setEnabled(False)）送出按鈕。
         self.new_project_submit_button.setEnabled(False)
         # 把按鈕加入（addWidget）到垂直佈局中。
         layout.addWidget(self.new_project_submit_button)
         # 綁定送出按鈕的點擊事件（clicked）到處理函式（Stub）。
-        self.new_project_submit_button.clicked.connect(self._on_submit_new_project_stub)
+        self.new_project_submit_button.clicked.connect(self._on_submit_new_project)
         # 空白推底：加入一個拉伸因子（addStretch(1)），把上面所有東西推到頂部。
         layout.addStretch(1)
 
@@ -586,6 +592,111 @@ class SentryConsoleWindow(QWidget):
             level="success",
         )
 
+        # === 貼在 _on_project_double_clicked 函式的正下方 ===
+
+    # 這裡，我們用「def」來定義（define）處理表格右鍵選單的函式。
+    def _on_table_context_menu(self, position) -> None:
+        """顯示右鍵選單：手動更新 / 刪除專案。"""
+        # 獲取（get）滑鼠點擊位置對應的索引（index）。
+        index = self.project_table.indexAt(position)
+        # 如果（if）點擊位置無效（沒點到行），就直接結束。
+        if not index.isValid():
+            return
+
+        # 獲取行號。
+        row = index.row()
+        
+        # 獲取該列的 UUID（第 0 欄）和名稱（第 1 欄）。
+        uuid_item = self.project_table.item(row, 0)
+        name_item = self.project_table.item(row, 1)
+        
+        # 防呆：如果拿不到資料，就結束。
+        if not uuid_item or not name_item:
+            return
+            
+        project_uuid = uuid_item.text()
+        project_name = name_item.text()
+
+        # 建立（create）一個選單物件。
+        menu = QMenu(self.project_table)
+
+        # [選項 A] 手動觸發更新
+        action_update = QAction("🔄 立即手動更新 (Manual Update)", menu)
+        # 綁定事件：使用 lambda 傳遞參數給處理函式。
+        action_update.triggered.connect(
+            lambda checked: self._perform_manual_update(project_uuid, project_name)
+        )
+        menu.addAction(action_update)
+
+        # 加入分隔線。
+        menu.addSeparator()
+
+        # [選項 B] 刪除專案 (紅字警告風格)
+        action_delete = QAction("🗑️ 刪除此專案...", menu)
+        # 綁定事件。
+        action_delete.triggered.connect(
+            lambda checked: self._perform_delete_project(project_uuid, project_name)
+        )
+        menu.addAction(action_delete)
+
+        # 在滑鼠位置顯示（exec）選單。
+        menu.exec(self.project_table.viewport().mapToGlobal(position))
+
+    # 這裡，我們用「def」來定義（define）執行手動更新的動作函式。
+    def _perform_manual_update(self, uuid: str, name: str) -> None:
+        # 先顯示一個「請稍候」的狀態訊息。
+        self._set_status_message(f"正在更新專案 '{name}'，請稍候...", level="info")
+        
+        # 強制刷新（processEvents）UI，避免看起來卡死。
+        QApplication.processEvents()
+
+        try:
+            # 呼叫（call）後端執行更新。
+            adapter.trigger_manual_update(uuid)
+            # 成功後顯示綠字訊息。
+            self._set_status_message(f"✓ 專案 '{name}' 手動更新成功！", level="success")
+            # 彈出成功對話框。
+            QMessageBox.information(self, "更新成功", f"專案 '{name}' 的目錄結構已更新至 Markdown。")
+        except Exception as e:
+            # 失敗顯示紅字訊息。
+            self._set_status_message(f"更新失敗：{e}", level="error")
+            # 彈出錯誤警告框。
+            QMessageBox.critical(self, "更新失敗", str(e))
+
+    # 這裡，我們用「def」來定義（define）執行刪除專案的動作函式。
+    def _perform_delete_project(self, uuid: str, name: str) -> None:
+        # 1. 彈出確認視窗 (防呆)
+        reply = QMessageBox.question(
+            self,
+            "確認刪除",
+            f"您確定要刪除專案「{name}」嗎？\n\n"
+            "這將會：\n"
+            "1. 停止該專案的哨兵 (若在運行)\n"
+            "2. 從設定檔移除專案\n"
+            "3. 清除相關日誌與暫存檔\n\n"
+            "(不會刪除您的原始檔案)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        # 如果使用者沒有按 Yes，就結束。
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # 2. 執行刪除
+        try:
+            # 呼叫後端刪除。
+            adapter.delete_project(uuid)
+            self._set_status_message(f"✓ 專案 '{name}' 已刪除。", level="success")
+            
+            # 3. 刪除後重整列表（重要！這樣 UI 才會消失）。
+            self._reload_projects_from_backend()
+            # 清空右側詳情區。
+            self._update_detail_panel(None)
+            
+        except Exception as e:
+            self._set_status_message(f"刪除失敗：{e}", level="error")
+            QMessageBox.critical(self, "刪除失敗", str(e))
 
     def _on_select_new_path(self, button: QPushButton) -> None:
         """
@@ -634,75 +745,101 @@ class SentryConsoleWindow(QWidget):
         self._update_new_project_submit_state()
 
 
-    def _on_submit_new_project_stub(self) -> None:
+    def _on_submit_new_project(self) -> None:
         """
-        按下「送出新增請求（Stub）」時呼叫：
-        - 處理一對多輸出檔的邏輯（只送出主輸出檔給 adapter）。
+        按下「確認新增」時呼叫：
+        - 處理輸入資料
+        - 呼叫後端 (含重名自動重試邏輯)
+        - 更新 UI
         """
         # --- 1. 獲取所有路徑 ---
-        # 獲取（get）專案資料夾路徑，並去除空格（strip）。
         folder = self.new_input_fields[0].text().strip()
-        # 獲取（get）主要輸出檔路徑（索引 1），並去除空格（strip）。
         primary_output_file = self.new_input_fields[1].text().strip()
 
-        # # DEFENSE: 防呆檢查。
+        # # DEFENSE: 防呆檢查
         if not folder or not primary_output_file:
             return
 
         from pathlib import Path
+        # 預設名稱：取資料夾名稱
+        default_name = Path(folder).name or folder
 
-        name = Path(folder).name or folder
-
-        # 獲取所有額外的輸出檔路徑（索引 2 和 3）。
+        # 獲取額外目標 (目前僅用於顯示資訊，尚未寫入)
         extra_targets = [
             self.new_input_fields[i].text().strip()
             for i in range(2, 4) if self.new_input_fields[i].text().strip()
         ]
         
-        # --- 核心 UX 修正：精簡提示內容 ---
-        # 提取主目標的檔名（filename）和額外目標的數量（count）。
+        # 準備顯示用的資訊
         primary_output_filename = Path(primary_output_file).name
         extra_count = len(extra_targets)
-        
-        # 建立提示訊息：
-        ux_message = (
-            f"✓ 已送出新增請求（Stub）。\n"
-            f"主目標檔名: {primary_output_filename}\n"
-            f"額外目標數量: {extra_count} 個\n\n"
-            "目前僅記錄請求，不會寫入檔案或更新列表。"
-        )
-        # 模擬 Adapter 接收路徑：
         targets_msg = f"（額外目標：{extra_count} 個）"
 
-        # 嘗試（try）執行可能出錯的程式碼。
-        try:
-            # 呼叫（call）後端（adapter）的 add_project 函式，傳入名稱、資料夾和**主要輸出檔**。
-            adapter.add_project(name=name, path=folder, output_file=primary_output_file)
+        # --- 核心 UX 優化：重名自動重試迴圈 ---
+        # 初始嘗試的名字
+        current_name = default_name
+        
+        while True:
+            try:
+                # 嘗試呼叫後端新增
+                adapter.add_project(name=current_name, path=folder, output_file=primary_output_file)
+                
+                # --- 如果程式跑到這裡，代表成功了！ ---
+                
+                # 1. 準備成功訊息
+                ux_message = (
+                    f"✓ 專案新增成功！\n\n"
+                    f"專案名稱: {current_name}\n"
+                    f"主目標檔: {primary_output_filename}\n"
+                    f"額外目標: {extra_count} 個\n\n"
+                    "後端已更新設定，您可以立即啟動監控。"
+                )
 
-        # 如果在 try 區塊發生了 adapter.BackendError 錯誤...
-        except adapter.BackendError as e:
-            self._set_status_message(f"新增專案失敗：{e}", level="error")
-            return
+                # 2. 彈出成功視窗
+                QMessageBox.information(self, "新增成功", ux_message)
+                
+                # 3. 更新底部狀態列
+                self._set_status_message(
+                    f"✓ 專案 '{current_name}' 新增成功。{targets_msg}",
+                    level="success",
+                )
 
-        # 如果 try 區塊成功，就顯示一個精簡的資訊對話框（QMessageBox.information）。
-        QMessageBox.information(
-            self,
-            "新增專案（Stub）",
-            ux_message,
-        )
-        # 呼叫（call）_set_status_message，顯示成功的提示訊息。
-        self._set_status_message(
-            f"✓ 已送出新增請求（Stub）。{targets_msg}",
-            level="success",
-        )
+                # 4. 清空欄位 + 重繪列表
+                for edit in self.new_input_fields:
+                    edit.clear()
 
-        # --- 成功後清空欄位 + 重繪列表 ---
-        for edit in self.new_input_fields:
-            edit.clear()
+                self._update_new_project_submit_state()
+                self._reload_projects_from_backend()
+                self._update_detail_panel(None)
+                
+                # 成功，跳出迴圈
+                break 
 
-        self._update_new_project_submit_state()
-        self._reload_projects_from_backend()
-        self._update_detail_panel(None)
+            except adapter.BackendError as e:
+                error_msg = str(e)
+                # 【關鍵判定】檢查是否為重名錯誤
+                # (對應 daemon 拋出的: "專案別名 'xxx' 已被佔用")
+                if "已被佔用" in error_msg:
+                    # 彈出輸入框讓使用者改名
+                    new_name, ok = QInputDialog.getText(
+                        self, 
+                        "專案名稱衝突", 
+                        f"名稱 '{current_name}' 已存在。\n請輸入新的專案別名：",
+                        text=current_name + "_new"
+                    )
+                    
+                    if ok and new_name:
+                        # 如果使用者輸入新名字並按 OK，更新名字，重跑迴圈 (continue)
+                        current_name = new_name.strip()
+                        continue
+                    else:
+                        # 如果使用者按取消，視為放棄操作
+                        self._set_status_message(f"新增取消：名稱衝突", level="error")
+                        return
+                
+                # 如果是其他錯誤 (如路徑不存在)，直接報錯並結束
+                self._set_status_message(f"新增專案失敗：{error_msg}", level="error")
+                return
 
     # 這裡，我們用「def」來定義（define）更新新增專案按鈕狀態的函式。
     def _update_new_project_submit_state(self) -> None:
@@ -756,8 +893,10 @@ class SentryConsoleWindow(QWidget):
             f"監控狀態：{status_label}",
             f"模式：{mode_label}",
             "",
-            "（目前為假後端 stub：之後會改成顯示真實的寫入檔路徑、日誌入口等）",
-            "雙擊左側列表可在【監控中／已停止】之間切換（僅影響 stub 狀態）。",
+            f"專案路徑：{proj.path}",
+            f"主寫入檔：{proj.output_file[0] if proj.output_file else '(未設定)'}",
+            "",
+            "提示：雙擊左側列表可【啟動／停止】監控。",
         ]
         # 用換行符號（\n）連接（join）文字籃子，並設定（setText）到詳情標籤上。
         self.detail_label.setText("\n".join(text_lines))
