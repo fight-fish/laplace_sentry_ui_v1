@@ -9,11 +9,10 @@ from dataclasses import dataclass, field
 # 導入（import）路徑處理（pathlib）中的 Path 工具。
 from pathlib import Path
 # 導入（import）類型提示（typing）中的 Literal（字面量）、List（列表）、Dict（字典）和 Optional（可選的）。
-from typing import Literal, List, Dict, Optional
-
+from typing import Literal, List, Dict, Optional, Any
 # 導入（import）json 模組，用於讀取和寫入 JSON 格式的設定檔。
 import json
-
+import subprocess
 
 # ============================
 #  型別定義（給 tray_app 使用）
@@ -43,6 +42,17 @@ class BackendError(Exception):
     # 這裡用 pass 意思是不需要為這個錯誤類型添加額外的程式碼。
     pass
 
+# ============================
+#  WSL 設定 (Hardcoded for v1)
+# ============================
+# 1. 【關鍵】必須先定義根目錄
+WSL_PROJECT_ROOT = "/home/serpal/My_Python_Projects/laplace_sentry_control_v2"
+
+# 2. 再引用它來定義 Python 路徑 (指向 .venv)
+WSL_PYTHON = f"{WSL_PROJECT_ROOT}/.venv/bin/python"
+
+# 3. 最後定義主腳本路徑
+WSL_MAIN_SCRIPT = "src.core.daemon"
 
 # 這裡，我們用「@dataclass」標記（mark）這是一個資料類別（只有數據）。
 @dataclass
@@ -144,9 +154,79 @@ class BackendAdapter:
             tree_depth_limit=3,
         )
 
-        # 呼叫（call）_load_projects_json 函式，開始從 JSON 檔案中載入資料。
-        self._load_projects_json()
+        # 【核心修改】停止在初始化時讀取實體檔案！
+        # 我們現在依賴 list_projects() 動態去 WSL 撈資料。
+        # self._load_projects_json()
 
+
+    # 這裡，我們用「def」來定義（define）一個執行 WSL 指令的通用函式。
+    def _run_wsl_command(self, cmd: str, *args: str) -> list | dict | str:
+        """
+        核心通訊橋樑 (v3 智能解析版)：
+        1. 組裝 wsl ... 指令
+        2. 強制使用 utf-8 解碼
+        3. 智能解析：優先找 JSON，失敗但執行成功則視為 OK
+        """
+        full_cmd = [
+            "wsl",
+            "--cd", WSL_PROJECT_ROOT,
+            WSL_PYTHON,
+            "-m", WSL_MAIN_SCRIPT,
+            cmd,
+            *args
+        ]
+
+        try:
+            # 執行指令
+            result = subprocess.run(
+                full_cmd,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                check=True 
+            )
+            
+            output = result.stdout.strip()
+
+            if not output:
+                return []
+
+            # --- 策略 1: 直接解析 JSON ---
+            try:
+                return json.loads(output)
+            except json.JSONDecodeError:
+                pass # 失敗了？沒關係，進入策略 2
+
+            # --- 策略 2: 嘗試從雜訊中提取 JSON (針對 list_projects) ---
+            # 尋找最外層的 [...] 或 {...}
+            try:
+                l_idx = output.find('[')
+                r_idx = output.rfind(']')
+                if l_idx != -1 and r_idx != -1 and r_idx > l_idx:
+                    return json.loads(output[l_idx : r_idx + 1])
+                
+                l_idx = output.find('{')
+                r_idx = output.rfind('}')
+                if l_idx != -1 and r_idx != -1 and r_idx > l_idx:
+                    return json.loads(output[l_idx : r_idx + 1])
+            except json.JSONDecodeError:
+                pass # 還是失敗？進入策略 3
+
+            # --- 策略 3: 寬容放行 (針對 start_sentry 等操作指令) ---
+            # 如果 returncode 是 0 (代表執行成功)，且我們無法解析出 JSON，
+            # 我們就假設這是一個成功的操作指令回傳，直接返回 "OK"。
+            # 這能有效過濾掉【守護進程】等日誌雜訊。
+            if result.returncode == 0:
+                return "OK"
+
+            # 如果連這都沒過，那就真的是格式錯誤了
+            raise BackendError(f"資料解析失敗 (非 JSON 且無法識別為 OK): {output}")
+
+        except subprocess.CalledProcessError as e:
+            error_msg = e.stderr.strip() or "未知錯誤"
+            raise BackendError(f"WSL 執行失敗: {error_msg}")
+        except Exception as e:
+            raise BackendError(f"系統錯誤: {e}")        
     # ---------------------------------------------------------
     # 讀取 projects.json
     # ---------------------------------------------------------
@@ -246,54 +326,106 @@ class BackendAdapter:
     # 給 UI 用的介面（instance 版本）
     # ---------------------------------------------------------
 
-    # 這裡，我們用「def」來定義（define）對外提供的專案列表獲取函式。
+# ... (在 BackendAdapter 類別內)
+
     def list_projects(self) -> List[ProjectInfo]:
-        """回傳目前所有專案的 UI 資訊。"""
-        # 使用列表生成式（list comprehension）
-        # 循環（for）_projects 籃子中的每一個原始專案（p），
-        # 然後呼叫（call）_to_project_info 函式進行轉換，
-        # 最後回傳（return）由 ProjectInfo 物件組成的列表。
-        return [self._to_project_info(p) for p in self._projects]
+        """
+        【真實化】呼叫 WSL 獲取專案列表，並轉換為 UI 格式。
+        """
+        # 1. 呼叫 WSL 指令：list_projects
+        # 這會執行：wsl python3 main.py list_projects
+        raw_data = self._run_wsl_command("list_projects")
+
+        # 2. 清空舊快取
+        self._projects.clear()
+        self._runtime.clear() # 真實模式下，我們依賴後端狀態，這裡先清空
+
+        # 3. 轉換資料
+        if not isinstance(raw_data, list):
+            return []
+
+        result_list = []
+
+        for item in raw_data:
+            # 安全獲取欄位
+            uuid = str(item.get("uuid", ""))
+            name = str(item.get("name", ""))
+            status = item.get("status", "stopped") # 後端現在有真實狀態了
+            
+            # 將後端狀態映射到前端型別 (簡單映射)
+            # 後端: running, stopped, invalid_path, muting
+            # 前端 ProjectStatus: "monitoring", "stopped"
+            # 前端 ProjectMode: "silent", "interactive" (暫時依賴 muting 判斷)
+            
+            ui_status: ProjectStatus = "monitoring" if status == "running" else "stopped"
+            ui_mode: ProjectMode = "silent" if status == "muting" else "interactive"
+
+            # 建立 ProjectInfo 物件
+            info = ProjectInfo(
+                uuid=uuid,
+                name=name,
+                status=ui_status,
+                mode=ui_mode,
+                path=str(item.get("path", "")),
+                output_file=item.get("output_file", []),
+                target_files=item.get("target_files", [])
+            )
+            result_list.append(info)
+            
+            # (選擇性) 同步更新內部 _projects 列表，以備其他舊邏輯使用
+            # 這裡為了簡單，我們直接回傳轉換好的列表，暫不維護 _RawProject 的複雜映射
+            
+        return result_list
 
     # 這裡，我們用「def」來定義（define）切換專案狀態的函式。
-    def toggle_project_status(self, project_name: str) -> Optional[ProjectInfo]:
+    def toggle_project_status(self, key: str) -> Optional[ProjectInfo]:
         """
-        依照專案名稱切換監控狀態：
-        - 若找到：切換 monitoring/stopped，回傳更新後的 ProjectInfo
-        - 若沒找到：回傳 None
+        【真實化】發送 start/stop_sentry 指令給 WSL。
+        流程：
+        1. 獲取當前真實狀態 (list_projects)
+        2. 判斷要 Start 還是 Stop
+        3. 發送指令
+        4. 回傳更新後的狀態
         """
-        # 預設目標原始專案（target_raw）是空的（None）。
-        target_raw: Optional[_RawProject] = None
-
-        # 我們用「for...in...」這個結構，來一個一個地（for）檢查 _projects 籃子中的專案。
-        for raw in self._projects:
-            # 用「if」來判斷：如果（if）原始專案的名稱（raw.name）等於（==）傳入的名稱...
-            if raw.name == project_name:
-                # 找到目標了，把這個原始專案物件存到 target_raw。
-                target_raw = raw
-                # 用「break」跳出（exit）這個 for 循環。
-                break
-
-        # 用「if」來判斷：如果（if）target_raw 還是空的（None）...
-        if target_raw is None:
-            # 就回傳（return） None，表示找不到專案。
+        # 1. 獲取最新狀態 (這是 Source of Truth)
+        # 我們直接呼叫自己的 list_projects，它會去問 WSL
+        current_list = self.list_projects()
+        
+        # 2. 尋找目標專案 (優先匹配 UUID，兼容 Name)
+        target = next((p for p in current_list if p.uuid == key), None)
+        if not target:
+            # Fallback: 試試看用名字找 (為了相容舊 UI 行為)
+            target = next((p for p in current_list if p.name == key), None)
+        
+        if not target:
+            print(f"Adapter: 找不到專案 {key}")
             return None
 
-        # 從 runtime 盒子（_runtime）中獲取（get）目標專案的狀態。
-        state = self._runtime.get(target_raw.uuid)
-        # 用「if」來判斷：如果（if）狀態是空的（None）（理論上不該發生）...
-        if state is None:
-            # 就建立一個預設狀態。
-            state = _RuntimeState()
-            # 並把這個新狀態用 uuid 標籤放回 runtime 盒子中。
-            self._runtime[target_raw.uuid] = state
+        # 3. 判斷意圖 & 發送指令
+        # 根據我們在 list_projects 的定義：ui_status 為 "monitoring" 代表後端是 "running"
+        try:
+            if target.status == "monitoring":
+                # 當前是監控中 -> 執行停止
+                print(f"--- Adapter: Stopping sentry for {target.name} ({target.uuid}) ---")
+                self._run_wsl_command("stop_sentry", target.uuid)
+            else:
+                # 當前是停止/失效 -> 執行啟動
+                print(f"--- Adapter: Starting sentry for {target.name} ({target.uuid}) ---")
+                self._run_wsl_command("start_sentry", target.uuid)
+        except BackendError as e:
+            # 如果後端報錯 (例如路徑不存在)，我們印出錯誤但不崩潰，讓 UI 顯示舊狀態或錯誤
+            print(f"Adapter Error: {e}")
+            return None
 
-        # 核心切換邏輯：
-        # 用「= ... if ... else ...」來判斷並賦值：
-        # 如果（if）狀態是 "monitoring"，就設定為 "stopped"，否則（else）設定為 "monitoring"。
-        state.status = "stopped" if state.status == "monitoring" else "monitoring"
-        # 呼叫（call）_to_project_info 函式，把更新後的狀態轉成 ProjectInfo，並回傳（return）。
-        return self._to_project_info(target_raw)
+        # 4. 確認結果 (再撈一次，確保狀態已更新)
+        # 給後端一點點時間處理 PID 檔案 (0.5秒通常足夠)
+        import time
+        time.sleep(1.5)
+        
+        new_list = self.list_projects()
+        updated_target = next((p for p in new_list if p.uuid == target.uuid), None)
+        
+        return updated_target
 
     # 這裡，我們用「def」來定義（define）獲取忽略設定的函式。
     def get_ignore_settings(self) -> IgnoreSettings:
@@ -303,17 +435,14 @@ class BackendAdapter:
 
     def add_project(self, name: str, path: str, output_file: str) -> None:
         """
-        【Stub 版本】
-
-        - 目前僅負責記錄「新增專案請求」的參數，不會修改 projects.json。
-        - 未來若要接上真正的 Laplace Sentry daemon，可以在這裡呼叫
-        CLI / RPC，並根據結果決定是否拋出 BackendError。
+        【真實化】呼叫 WSL daemon 新增專案。
+        - 對應後端指令: add_project <name> <path> <output_file>
         """
         name = (name or "").strip()
         path = (path or "").strip()
         output_file = (output_file or "").strip()
 
-        # 最基本的防呆檢查（避免 UI 傳完全空白的東西進來）
+        # 基本防呆
         if not name:
             raise BackendError("【新增失敗】：專案名稱不得為空。")
         if not path:
@@ -321,16 +450,11 @@ class BackendAdapter:
         if not output_file:
             raise BackendError("【新增失敗】：寫入檔路徑不得為空。")
 
-        # ✅ B-2 要求：「先 print，不寫檔」
-        print(
-            f"[backend_adapter stub] add_project("
-            f"name={name!r}, path={path!r}, output_file={output_file!r})"
-        )
-
-        # ⚠ 目前不修改 self._projects / self._runtime，也不寫回 json 檔。
-        #    真正的新增行為會在未來改為：
-        #    - 呼叫 Laplace Sentry daemon 的 add_project 命令
-        #    - 再重新載入 projects.json
+        # 呼叫通用通訊函式
+        # 如果後端驗證失敗 (如路徑不存在、重名)，會拋出例外，被 UI 捕獲顯示紅字
+        self._run_wsl_command("add_project", name, path, output_file)
+        
+        # 成功後不需要回傳值，UI 會自動重刷列表
 
 
 # ============================
@@ -352,12 +476,9 @@ def _ensure_adapter() -> BackendAdapter:
         # 就直接回傳（return）現有的物件。
         return _adapter_singleton
 
-    # ⚠ 這條路徑依照你目前 WSL / 專案路徑寫死
-    # 這裡，我們用 Path 工具來定義（define）projects.json 的**絕對路徑**。
-    # 這是基於您的個人化配置（WSL2）來寫死的路徑。
-    json_path = Path(
-        r"\\wsl.localhost\Ubuntu\home\serpal\My_Python_Projects\laplace_sentry_control_v2\data\projects.json"
-    )
+    # 【核心修改】我們不再需要這個高風險的 UNC 路徑了！
+    # 傳入一個標示字串即可，BackendAdapter 現在是「指令發送器」，不是「檔案讀取器」。
+    json_path = "WSL_MODE_NO_DIRECT_FILE_ACCESS"
 
     # 建立（instantiate）BackendAdapter 物件，把路徑傳入。
     _adapter_singleton = BackendAdapter(json_path)
