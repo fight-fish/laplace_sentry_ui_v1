@@ -4,9 +4,8 @@
 import sys
 # 導入（import）路徑處理（pathlib）中的 Path 工具，方便處理檔案路徑。
 from pathlib import Path
-# 導入（import）類型提示（typing）中的 cast，用於幫助程式碼更清晰。
-from typing import cast
-
+# 導入（import）類型提示（typing）中的 cast, List, Dict, Any。
+from typing import cast, List, Dict, Any 
 
 # --- 2. 導入 PySide6 介面相關模組 ---
 
@@ -156,6 +155,105 @@ class IgnoreSettingsDialog(QDialog):
         self.list_widget.scrollToBottom()
         self.new_pattern_edit.clear()
 
+# tray_app.py (在 IgnoreSettingsDialog 類別下方)
+
+# 我們用「class」來定義（define）編輯專案設定視窗類別。
+class EditProjectDialog(QDialog):
+    """
+    修改專案設定視窗：
+    - 顯示專案名稱、路徑、目標檔等現有資訊。
+    - 允許編輯名稱、專案路徑、主寫入檔。
+    """
+    # 我們用「def」來定義（define）初始化函式。
+    def __init__(self, parent=None, project_data: adapter.ProjectInfo | None = None):
+        # 我們用「super().__init__(parent)」來呼叫（call）父類別初始化函式。
+        super().__init__(parent)
+        # 我們用「self.setWindowTitle("修改專案設定 - {project_data.name}")」來設定（set）視窗標題。
+        self.setWindowTitle(f"修改專案設定 - {project_data.name}" if project_data else "修改專案設定")
+        # 我們用「self.resize(600, 300)」來設定（set）視窗大小。
+        self.resize(600, 300)
+        # 我們用「self.uuid = project_data.uuid」來儲存（store）UUID。
+        self.uuid = project_data.uuid if project_data else ""
+        # 我們用「self._build_ui(project_data)」來建立（build）介面。
+        self._build_ui(project_data)
+
+    # 我們用「def」來定義（define）建立介面函式。
+    def _build_ui(self, data: adapter.ProjectInfo | None):
+        # 我們用「main_layout = QVBoxLayout(self)」來建立（create）主垂直佈局。
+        main_layout = QVBoxLayout(self)
+
+        # 1. 專案名稱
+        # 我們用「self.name_edit = QLineEdit(data.name)」來建立（create）名稱輸入框。
+        self.name_edit = QLineEdit(data.name if data else "")
+        # 我們用「main_layout.addWidget(QLabel("專案名稱 (Alias)："))」來新增（add）標籤。
+        main_layout.addWidget(QLabel("專案名稱 (Alias)："))
+        # 我們用「main_layout.addWidget(self.name_edit)」來新增（add）輸入框。
+        main_layout.addWidget(self.name_edit)
+
+        # 2. 專案路徑
+        # 我們用「path_layout = QHBoxLayout()」來建立（create）水平佈局。
+        path_layout = QHBoxLayout()
+        # 我們用「self.path_edit = QLineEdit(data.path)」來建立（create）路徑輸入框。
+        self.path_edit = QLineEdit(data.path if data else "")
+        # 我們用「path_layout.addWidget(QLabel("專案資料夾路徑 (Path)："))」來新增（add）標籤。
+        path_layout.addWidget(QLabel("專案資料夾路徑 (Path)："))
+        # 我們用「path_layout.addWidget(self.path_edit)」來新增（add）輸入框。
+        path_layout.addWidget(self.path_edit)
+        # 我們用「main_layout.addLayout(path_layout)」來新增（add）水平佈局。
+        main_layout.addLayout(path_layout)
+        # 我們用「main_layout.addWidget(QLabel("提示：修改路徑可能導致哨兵重啟！"))」來新增（add）提示。
+        main_layout.addWidget(QLabel("提示：修改路徑可能導致哨兵重啟！"))
+
+        # 我們用「main_layout.addSpacing(10)」來新增（add）間距。
+        main_layout.addSpacing(10)
+
+        # 3. 主寫入檔
+        # 我們用「output_path = data.output_file[0] if data and data.output_file else ""」來獲取（get）輸出路徑。
+        output_path = data.output_file[0] if data and data.output_file else ""
+        # 我們用「output_layout = QHBoxLayout()」來建立（create）水平佈局。
+        output_layout = QHBoxLayout()
+        # 我們用「self.output_edit = QLineEdit(output_path)」來建立（create）輸出輸入框。
+        self.output_edit = QLineEdit(output_path)
+        # 我們用「output_layout.addWidget(QLabel("主寫入檔路徑 (Output File)："))」來新增（add）標籤。
+        output_layout.addWidget(QLabel("主寫入檔路徑 (Output File)："))
+        # 我們用「output_layout.addWidget(self.output_edit)」來新增（add）輸入框。
+        output_layout.addWidget(self.output_edit)
+        # 我們用「main_layout.addLayout(output_layout)」來新增（add）水平佈局。
+        main_layout.addLayout(output_layout)
+
+        # 4. 按鈕區
+        # 我們用「self.button_box = QDialogButtonBox(...)」來建立（create）按鈕盒。
+        self.button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        # 我們用「self.button_box.accepted.connect(self.accept)」來連線（connect）接受訊號。
+        self.button_box.accepted.connect(self.accept)
+        # 我們用「self.button_box.rejected.connect(self.reject)」來連線（connect）拒絕訊號。
+        self.button_box.rejected.connect(self.reject)
+        # 我們用「main_layout.addWidget(self.button_box)」來新增（add）按鈕盒。
+        main_layout.addWidget(self.button_box)
+    
+    # 我們用「def」來定義（define）獲取變更函式。
+    def get_changes(self) -> Dict[str, str]:
+        """回傳所有被修改的欄位及其新值"""
+        # 我們用「changes = {}」來初始化（init）變更字典。
+        changes = {}
+        # 這裡需要對所有欄位進行 trim() 處理
+        # 我們用「if self.name_edit.text().strip():」來檢查（check）名稱是否有值。
+        if self.name_edit.text().strip():
+            # 我們用「changes['name'] = self.name_edit.text().strip()」來儲存（store）名稱。
+            changes['name'] = self.name_edit.text().strip()
+        # 我們用「if self.path_edit.text().strip():」來檢查（check）路徑是否有值。
+        if self.path_edit.text().strip():
+            # 我們用「changes['path'] = self.path_edit.text().strip()」來儲存（store）路徑。
+            changes['path'] = self.path_edit.text().strip()
+        # 我們用「if self.output_edit.text().strip():」來檢查（check）輸出是否有值。
+        if self.output_edit.text().strip():
+            # 我們用「changes['output_file'] = self.output_edit.text().strip()」來儲存（store）輸出。
+            changes['output_file'] = self.output_edit.text().strip()
+            
+        # 我們用「return changes」來回傳（return）變更。
+        return changes
 class SentryConsoleWindow(QWidget):
     """
     Sentry 控制台主視窗（接 backend_adapter 的雛型）
@@ -786,8 +884,6 @@ class SentryConsoleWindow(QWidget):
             level="success",
         )
 
-        # === 貼在 _on_project_double_clicked 函式的正下方 ===
-
     # 這裡，我們用「def」來定義（define）處理表格右鍵選單的函式。
     def _on_table_context_menu(self, position) -> None:
         """顯示右鍵選單：手動更新 / 刪除專案。"""
@@ -822,7 +918,24 @@ class SentryConsoleWindow(QWidget):
         )
         menu.addAction(action_update)
 
+        menu.addAction(action_update)
+
         # 加入分隔線。
+        # 我們用「menu.addSeparator()」來新增（add）分隔線。
+        menu.addSeparator() 
+
+        # [選項 C] 修改專案
+        # 我們用「action_edit = QAction("📝 修改專案...", menu)」來建立（create）動作。
+        action_edit = QAction("📝 修改專案...", menu)
+        # 我們用「action_edit.triggered.connect(...)」來連線（connect）觸發訊號。
+        action_edit.triggered.connect(
+            lambda checked: self._perform_edit_project(project_uuid, project_name)
+        )
+        # 我們用「menu.addAction(action_edit)」來新增（add）動作。
+        menu.addAction(action_edit)
+        
+        # 加入分隔線。
+        # 我們用「menu.addSeparator()」來新增（add）分隔線。
         menu.addSeparator()
 
         # [選項 B] 刪除專案 (紅字警告風格)
@@ -891,6 +1004,55 @@ class SentryConsoleWindow(QWidget):
         except Exception as e:
             self._set_status_message(f"刪除失敗：{e}", level="error")
             QMessageBox.critical(self, "刪除失敗", str(e))
+
+            # tray_app.py (在 _perform_delete_project 函式下方)
+
+# 我們用「def」來定義（define）執行編輯專案函式。
+    def _perform_edit_project(self, uuid: str, name: str) -> None:
+        """打開編輯視窗，並呼叫後端修改專案。"""
+        # 1. 找到專案的完整資料
+        target_proj = next((p for p in self.current_projects if p.uuid == uuid), None)
+        if not target_proj:
+            QMessageBox.critical(self, "錯誤", f"找不到 UUID 為 {uuid} 的專案資料。")
+            return
+
+        # 2. 建立並開啟編輯對話框
+        dialog = EditProjectDialog(self, target_proj)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # 3. 獲取所有變動
+            changes = dialog.get_changes()
+            
+            if not changes:
+                self._set_status_message("沒有任何變更，已取消操作。", level="info")
+                return
+            
+            # 4. 逐一呼叫後端 API 進行修改
+            all_success = True
+            error_details = []
+            
+            for field, new_value in changes.items():
+                try:
+                    if field in ['name', 'path', 'output_file']:
+                        self._set_status_message(f"正在修改 '{name}' 的 {field}...", level="info")
+                        QApplication.processEvents()
+                        
+                        # 【修正】這裡改為呼叫 adapter.edit_project(uuid, field, new_value)
+                        # 這符合我們剛剛在 adapter.py 定義的接口 (3 個參數)
+                        adapter.edit_project(uuid, field, new_value) 
+                        
+                except Exception as e:
+                    all_success = False
+                    error_details.append(f"欄位 {field} 失敗：{e}")
+                    
+            # 5. 根據結果更新 UI
+            if all_success:
+                self._set_status_message(f"✓ 專案 '{name}' 已成功更新！", level="success")
+                self._reload_projects_from_backend() # 重繪列表
+            else:
+                final_error = "\n".join(error_details)
+                self._set_status_message(f"更新失敗！詳情請見彈出視窗。", level="error")
+                QMessageBox.critical(self, "部分更新失敗", f"專案 '{name}' 的部分欄位未能更新。\n\n錯誤詳情:\n{final_error}")
 
     def _on_select_new_path(self, button: QPushButton) -> None:
         """

@@ -159,21 +159,26 @@ class BackendAdapter:
         # self._load_projects_json()
 
 
-    # 這裡，我們用「def」來定義（define）一個執行 WSL 指令的通用函式。
     def _run_wsl_command(self, cmd: str, *args: str) -> list | dict | str:
         """
-        核心通訊橋樑 (v3 智能解析版)：
-        1. 組裝 wsl ... 指令
-        2. 強制使用 utf-8 解碼
-        3. 智能解析：優先找 JSON，失敗但執行成功則視為 OK
+        核心通訊橋樑 (v3.1 安全路徑版)：
+        1. 【新增】強制將所有 args 中的反斜線 (\\) 替換為正斜線 (/)，防止被 WSL Shell 吃掉。
+        2. 組裝 wsl ... 指令
+        3. 強制使用 utf-8 解碼
+        4. 智能解析回傳值
         """
+        # --- 安全清洗：防止反斜線災難 ---
+        # WSL/Linux 接收參數時，反斜線 \ 會被視為跳脫字元。
+        # 我們必須在 Windows 這端就先把它轉成 /，這對 Linux 來說是合法的路徑分隔符。
+        clean_args = [str(a).replace("\\", "/") for a in args]
+
         full_cmd = [
             "wsl",
             "--cd", WSL_PROJECT_ROOT,
             WSL_PYTHON,
             "-m", WSL_MAIN_SCRIPT,
             cmd,
-            *args
+            *clean_args
         ]
 
         try:
@@ -195,10 +200,9 @@ class BackendAdapter:
             try:
                 return json.loads(output)
             except json.JSONDecodeError:
-                pass # 失敗了？沒關係，進入策略 2
+                pass 
 
-            # --- 策略 2: 嘗試從雜訊中提取 JSON (針對 list_projects) ---
-            # 尋找最外層的 [...] 或 {...}
+            # --- 策略 2: 嘗試從雜訊中提取 JSON ---
             try:
                 l_idx = output.find('[')
                 r_idx = output.rfind(']')
@@ -210,23 +214,19 @@ class BackendAdapter:
                 if l_idx != -1 and r_idx != -1 and r_idx > l_idx:
                     return json.loads(output[l_idx : r_idx + 1])
             except json.JSONDecodeError:
-                pass # 還是失敗？進入策略 3
+                pass 
 
-            # --- 策略 3: 寬容放行 (針對 start_sentry 等操作指令) ---
-            # 如果 returncode 是 0 (代表執行成功)，且我們無法解析出 JSON，
-            # 我們就假設這是一個成功的操作指令回傳，直接返回 "OK"。
-            # 這能有效過濾掉【守護進程】等日誌雜訊。
+            # --- 策略 3: 寬容放行 ---
             if result.returncode == 0:
                 return "OK"
 
-            # 如果連這都沒過，那就真的是格式錯誤了
             raise BackendError(f"資料解析失敗 (非 JSON 且無法識別為 OK): {output}")
 
         except subprocess.CalledProcessError as e:
             error_msg = e.stderr.strip() or "未知錯誤"
             raise BackendError(f"WSL 執行失敗: {error_msg}")
         except Exception as e:
-            raise BackendError(f"系統錯誤: {e}")        
+            raise BackendError(f"系統錯誤: {e}")   
     # ---------------------------------------------------------
     # 讀取 projects.json
     # ---------------------------------------------------------
@@ -456,12 +456,24 @@ class BackendAdapter:
         
         # 成功後不需要回傳值，UI 會自動重刷列表
 
-    # 這裡，我們用「def」來定義（define）刪除專案的函式。
+# 這裡，我們用「def」來定義（define）刪除專案的函式。
     def delete_project(self, uuid: str) -> None:
         """呼叫 WSL 刪除專案。"""
         if not uuid:
             raise BackendError("刪除失敗：UUID 為空。")
         self._run_wsl_command("delete_project", uuid)
+
+    # 這裡，我們用「def」來定義（define）修改專案的函式。
+    def edit_project(self, uuid: str, field: str, new_value: str) -> None:
+        """
+        【真實化】發送 edit_project 指令給 WSL。
+        - 對應後端指令: edit_project <uuid> <field> <new_value>
+        """
+        if not uuid or not field or not new_value:
+            raise BackendError("編輯失敗：UUID、欄位名稱或新值不得為空。")
+        
+        # 呼叫通用通訊函式
+        code, output = self._run_wsl_command("edit_project", uuid, field, new_value)
 
     # 這裡，我們用「def」來定義（define）觸發手動更新的函式。
     def trigger_manual_update(self, uuid: str) -> None:
@@ -600,6 +612,12 @@ def delete_project(uuid: str) -> None:
     # 獲取（get）單例 adapter 並呼叫其 delete_project 方法。
     adapter = _ensure_adapter()
     return adapter.delete_project(uuid)
+
+# 這裡，我們用「def」來定義（define）對外提供的修改專案函式。
+def edit_project(uuid: str, field: str, new_value: str) -> None:
+    # 獲取（get）單例 adapter 並呼叫其 edit_project 方法。
+    adapter = _ensure_adapter()
+    return adapter.edit_project(uuid, field, new_value)
 
 # 這裡，我們用「def」來定義（define）對外提供的觸發手動更新函式。
 def trigger_manual_update(uuid: str) -> None:
