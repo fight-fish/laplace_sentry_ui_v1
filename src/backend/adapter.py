@@ -475,6 +475,20 @@ class BackendAdapter:
         # 呼叫通用通訊函式
         code, output = self._run_wsl_command("edit_project", uuid, field, new_value)
 
+        # 這裡，我們用「def」來定義（define）追加目標的函式。
+    def add_target(self, uuid: str, new_target: str) -> None:
+        """呼叫 WSL 為專案追加寫入目標。"""
+        if not uuid or not new_target:
+            raise BackendError("追加失敗：參數不得為空。")
+        self._run_wsl_command("add_target", uuid, new_target)
+
+    # 這裡，我們用「def」來定義（define）移除目標的函式。
+    def remove_target(self, uuid: str, target_to_remove: str) -> None:
+        """呼叫 WSL 移除專案的寫入目標。"""
+        if not uuid or not target_to_remove:
+            raise BackendError("移除失敗：參數不得為空。")
+        self._run_wsl_command("remove_target", uuid, target_to_remove)
+
     # 這裡，我們用「def」來定義（define）觸發手動更新的函式。
     def trigger_manual_update(self, uuid: str) -> None:
         """呼叫 WSL 執行一次手動更新。"""
@@ -618,6 +632,16 @@ def edit_project(uuid: str, field: str, new_value: str) -> None:
     # 獲取（get）單例 adapter 並呼叫其 edit_project 方法。
     adapter = _ensure_adapter()
     return adapter.edit_project(uuid, field, new_value)
+
+# 這裡，我們用「def」來定義（define）對外提供的追加目標函式。
+def add_target(uuid: str, new_target: str) -> None:
+    adapter = _ensure_adapter()
+    return adapter.add_target(uuid, new_target)
+
+# 這裡，我們用「def」來定義（define）對外提供的移除目標函式。
+def remove_target(uuid: str, target_to_remove: str) -> None:
+    adapter = _ensure_adapter()
+    return adapter.remove_target(uuid, target_to_remove)
 
 # 這裡，我們用「def」來定義（define）對外提供的觸發手動更新函式。
 def trigger_manual_update(uuid: str) -> None:

@@ -155,105 +155,160 @@ class IgnoreSettingsDialog(QDialog):
         self.list_widget.scrollToBottom()
         self.new_pattern_edit.clear()
 
-# tray_app.py (在 IgnoreSettingsDialog 類別下方)
 
 # 我們用「class」來定義（define）編輯專案設定視窗類別。
 class EditProjectDialog(QDialog):
     """
-    修改專案設定視窗：
-    - 顯示專案名稱、路徑、目標檔等現有資訊。
-    - 允許編輯名稱、專案路徑、主寫入檔。
+    修改專案設定視窗 (v2.0 - 多目標支援版)：
+    - 名稱 (Name) / 路徑 (Path)：【延遲儲存】按下 Save 才寫入。
+    - 寫入檔 (Targets)：【即時操作】按下新增/刪除按鈕立即生效。
     """
-    # 我們用「def」來定義（define）初始化函式。
     def __init__(self, parent=None, project_data: adapter.ProjectInfo | None = None):
-        # 我們用「super().__init__(parent)」來呼叫（call）父類別初始化函式。
         super().__init__(parent)
-        # 我們用「self.setWindowTitle("修改專案設定 - {project_data.name}")」來設定（set）視窗標題。
-        self.setWindowTitle(f"修改專案設定 - {project_data.name}" if project_data else "修改專案設定")
-        # 我們用「self.resize(600, 300)」來設定（set）視窗大小。
-        self.resize(600, 300)
-        # 我們用「self.uuid = project_data.uuid」來儲存（store）UUID。
+        self.project_data = project_data # 保留參照以便重新讀取
         self.uuid = project_data.uuid if project_data else ""
-        # 我們用「self._build_ui(project_data)」來建立（build）介面。
+        
+        self.setWindowTitle(f"修改專案設定 - {project_data.name if project_data else ''}")
+        self.resize(600, 500) # 加高一點以容納列表
+        
         self._build_ui(project_data)
 
-    # 我們用「def」來定義（define）建立介面函式。
     def _build_ui(self, data: adapter.ProjectInfo | None):
-        # 我們用「main_layout = QVBoxLayout(self)」來建立（create）主垂直佈局。
         main_layout = QVBoxLayout(self)
 
+        # --- A. 基本資料區 (延遲儲存) ---
+        group_basic = QFrame()
+        group_basic.setFrameShape(QFrame.Shape.StyledPanel)
+        layout_basic = QVBoxLayout(group_basic)
+        
+        layout_basic.addWidget(QLabel("<b>基本設定 (按下 Save 後生效)</b>"))
+        
         # 1. 專案名稱
-        # 我們用「self.name_edit = QLineEdit(data.name)」來建立（create）名稱輸入框。
         self.name_edit = QLineEdit(data.name if data else "")
-        # 我們用「main_layout.addWidget(QLabel("專案名稱 (Alias)："))」來新增（add）標籤。
-        main_layout.addWidget(QLabel("專案名稱 (Alias)："))
-        # 我們用「main_layout.addWidget(self.name_edit)」來新增（add）輸入框。
-        main_layout.addWidget(self.name_edit)
+        layout_basic.addWidget(QLabel("專案名稱 (Alias)："))
+        layout_basic.addWidget(self.name_edit)
 
         # 2. 專案路徑
-        # 我們用「path_layout = QHBoxLayout()」來建立（create）水平佈局。
-        path_layout = QHBoxLayout()
-        # 我們用「self.path_edit = QLineEdit(data.path)」來建立（create）路徑輸入框。
         self.path_edit = QLineEdit(data.path if data else "")
-        # 我們用「path_layout.addWidget(QLabel("專案資料夾路徑 (Path)："))」來新增（add）標籤。
-        path_layout.addWidget(QLabel("專案資料夾路徑 (Path)："))
-        # 我們用「path_layout.addWidget(self.path_edit)」來新增（add）輸入框。
-        path_layout.addWidget(self.path_edit)
-        # 我們用「main_layout.addLayout(path_layout)」來新增（add）水平佈局。
-        main_layout.addLayout(path_layout)
-        # 我們用「main_layout.addWidget(QLabel("提示：修改路徑可能導致哨兵重啟！"))」來新增（add）提示。
-        main_layout.addWidget(QLabel("提示：修改路徑可能導致哨兵重啟！"))
-
-        # 我們用「main_layout.addSpacing(10)」來新增（add）間距。
+        layout_basic.addWidget(QLabel("專案資料夾路徑 (Path)："))
+        layout_basic.addWidget(self.path_edit)
+        layout_basic.addWidget(QLabel("提示：修改路徑可能導致哨兵重啟！"))
+        
+        main_layout.addWidget(group_basic)
         main_layout.addSpacing(10)
 
-        # 3. 主寫入檔
-        # 我們用「output_path = data.output_file[0] if data and data.output_file else ""」來獲取（get）輸出路徑。
-        output_path = data.output_file[0] if data and data.output_file else ""
-        # 我們用「output_layout = QHBoxLayout()」來建立（create）水平佈局。
-        output_layout = QHBoxLayout()
-        # 我們用「self.output_edit = QLineEdit(output_path)」來建立（create）輸出輸入框。
-        self.output_edit = QLineEdit(output_path)
-        # 我們用「output_layout.addWidget(QLabel("主寫入檔路徑 (Output File)："))」來新增（add）標籤。
-        output_layout.addWidget(QLabel("主寫入檔路徑 (Output File)："))
-        # 我們用「output_layout.addWidget(self.output_edit)」來新增（add）輸入框。
-        output_layout.addWidget(self.output_edit)
-        # 我們用「main_layout.addLayout(output_layout)」來新增（add）水平佈局。
-        main_layout.addLayout(output_layout)
+        # --- B. 寫入檔管理區 (即時生效) ---
+        group_targets = QFrame()
+        group_targets.setFrameShape(QFrame.Shape.StyledPanel)
+        layout_targets = QVBoxLayout(group_targets)
+        
+        layout_targets.addWidget(QLabel("<b>寫入檔管理 (即時生效)</b>"))
+        
+        # 目標列表
+        self.target_list = QListWidget()
+        self._refresh_target_list(data.output_file if data else [])
+        layout_targets.addWidget(self.target_list)
+        
+        # 按鈕區
+        btn_layout = QHBoxLayout()
+        btn_add = QPushButton("➕ 追加寫入檔...")
+        btn_remove = QPushButton("➖ 移除選中檔")
+        
+        btn_add.clicked.connect(self._on_add_target)
+        btn_remove.clicked.connect(self._on_remove_target)
+        
+        btn_layout.addWidget(btn_add)
+        btn_layout.addWidget(btn_remove)
+        layout_targets.addLayout(btn_layout)
+        
+        main_layout.addWidget(group_targets)
 
-        # 4. 按鈕區
-        # 我們用「self.button_box = QDialogButtonBox(...)」來建立（create）按鈕盒。
+        # --- C. 底部按鈕 ---
         self.button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
-        # 我們用「self.button_box.accepted.connect(self.accept)」來連線（connect）接受訊號。
         self.button_box.accepted.connect(self.accept)
-        # 我們用「self.button_box.rejected.connect(self.reject)」來連線（connect）拒絕訊號。
         self.button_box.rejected.connect(self.reject)
-        # 我們用「main_layout.addWidget(self.button_box)」來新增（add）按鈕盒。
         main_layout.addWidget(self.button_box)
-    
-    # 我們用「def」來定義（define）獲取變更函式。
-    def get_changes(self) -> Dict[str, str]:
-        """回傳所有被修改的欄位及其新值"""
-        # 我們用「changes = {}」來初始化（init）變更字典。
-        changes = {}
-        # 這裡需要對所有欄位進行 trim() 處理
-        # 我們用「if self.name_edit.text().strip():」來檢查（check）名稱是否有值。
-        if self.name_edit.text().strip():
-            # 我們用「changes['name'] = self.name_edit.text().strip()」來儲存（store）名稱。
-            changes['name'] = self.name_edit.text().strip()
-        # 我們用「if self.path_edit.text().strip():」來檢查（check）路徑是否有值。
-        if self.path_edit.text().strip():
-            # 我們用「changes['path'] = self.path_edit.text().strip()」來儲存（store）路徑。
-            changes['path'] = self.path_edit.text().strip()
-        # 我們用「if self.output_edit.text().strip():」來檢查（check）輸出是否有值。
-        if self.output_edit.text().strip():
-            # 我們用「changes['output_file'] = self.output_edit.text().strip()」來儲存（store）輸出。
-            changes['output_file'] = self.output_edit.text().strip()
+
+    def _refresh_target_list(self, targets: List[str]):
+        """刷新列表顯示"""
+        self.target_list.clear()
+        for t in targets:
+            self.target_list.addItem(t)
+
+    def _reload_data(self):
+        """從後端重新讀取此專案的最新資料 (用於更新列表)"""
+        all_projects = adapter.list_projects()
+        current = next((p for p in all_projects if p.uuid == self.uuid), None)
+        if current:
+            self.project_data = current
+            self._refresh_target_list(current.output_file)
+
+    def _on_add_target(self):
+        """處理追加寫入檔 (即時)"""
+        # HACK: 避免循環引用
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "選擇要追加的 Markdown 檔案", "", "Markdown (*.md *.txt);;All Files (*.*)"
+        )
+        
+        if not file_path:
+            return
+
+        try:
+            # 呼叫後端追加
+            adapter.add_target(self.uuid, file_path)
+            # 刷新介面
+            self._reload_data()
+            QMessageBox.information(self, "成功", "已成功追加寫入目標。")
+        except Exception as e:
+            QMessageBox.critical(self, "追加失敗", str(e))
+
+    def _on_remove_target(self):
+        """處理移除寫入檔 (即時)"""
+        from PySide6.QtWidgets import QMessageBox
+        
+        selected_items = self.target_list.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "提示", "請先選擇要移除的路徑。")
+            return
             
-        # 我們用「return changes」來回傳（return）變更。
-        return changes
+        target_path = selected_items[0].text()
+        
+        # 二次確認
+        reply = QMessageBox.question(
+            self, "確認移除", f"確定要移除此寫入目標嗎？\n{target_path}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                adapter.remove_target(self.uuid, target_path)
+                self._reload_data()
+            except Exception as e:
+                QMessageBox.critical(self, "移除失敗", str(e))
+
+    def get_changes(self) -> Dict[str, str]:
+        """回傳基本資料的變更 (Name/Path)"""
+        changes = {}
+        
+        # 檢查名稱變更
+        new_name = self.name_edit.text().strip()
+        if self.project_data and new_name != self.project_data.name:
+            if new_name:
+                changes['name'] = new_name
+
+        # 檢查路徑變更
+        new_path = self.path_edit.text().strip()
+        # 注意：這裡簡單比對字串，嚴謹一點應該用 normalize_path，但暫時這樣足夠
+        if self.project_data and new_path != self.project_data.path:
+            if new_path:
+                changes['path'] = new_path
+            
+        return changes    
+
 class SentryConsoleWindow(QWidget):
     """
     Sentry 控制台主視窗（接 backend_adapter 的雛型）
