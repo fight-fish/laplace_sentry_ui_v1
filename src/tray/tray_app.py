@@ -312,40 +312,58 @@ class EditProjectDialog(QDialog):
 class SentryConsoleWindow(QWidget):
     """
     Sentry 控制台主視窗（接 backend_adapter 的雛型）
-
-    - 左側：專案列表（來自 adapter.list_projects）
-    - 右側：顯示目前選取專案的詳細狀態
-    - 下方：忽略設定區（目前只顯示 stub 資料）
     """
 
-# 這裡，我們用「def」來 定義（define）一個物件被建立時會自動執行的函式（__init__）。
-    def __init__(self) -> None:
-        # 我們必須先呼叫（super().__init__()）基礎類別 QWidget 的初始化方法。
+    # 我們用「def」來 定義（define）初始化方法，並接收統計回調（on_stats_change）。
+    def __init__(self, on_stats_change=None) -> None:
+        # 我們 呼叫（call）父類別的初始化。
         super().__init__()
         # 設定視窗的標題（Window Title）。
-        self.setWindowTitle("Sentry 控制台 v1（雛型）")
+        self.setWindowTitle("Sentry 控制台 v1 (UX 測試樣板)")
         # 設定視窗的初始大小（resize），寬 900 像素，高 600 像素。
         self.resize(900, 600)
         # 啟用（setAcceptDrops）主視窗的拖曳接收功能（True），這是 PySide6 處理拖曳事件的第一步。
         self.setAcceptDrops(True)
 
+        # 我們將回調函式 儲存（store）起來，供稍後使用。
+        self.on_stats_change = on_stats_change
+
         # # TODO: 這裡的註解將使用通俗比喻來解釋資料結構。
         # 準備一個叫「current_projects」的空籃子（[]），
         # 專門用來存放從後端讀取的專案資訊（adapter.ProjectInfo）。
         self.current_projects: list[adapter.ProjectInfo] = []
-
-        # 呼叫（call）_build_ui 函式，開始建立所有的介面元件。
+        # 呼叫各類函式來 建立介面 和 載入初始資料。        
         self._build_ui()
-        # 呼叫（call）_reload_projects_from_backend 函式，從後端資料庫載入專案列表。
         self._reload_projects_from_backend()
-        # 呼叫（call）_load_ignore_settings 函式，載入程式的忽略設定。
         self._load_ignore_settings()
+
+    # --- [新增] 獨立的統計通知函式 ---
+    # 我們用「def」來 定義（define）重新計算並通知上層的函式。
+    def _notify_stats_update(self) -> None:
+        """重新計算監控/靜默數量，並通知 Tray 更新 Tooltip"""
+        # 如果沒有設定回調，就不做任何事。
+        if not self.on_stats_change:
+            return
+
+        running_count = 0
+        muting_count = 0
+        
+        # 我們用「for」來 遍歷（iterate）所有專案。
+        for p in self.current_projects:
+            if p.status == "monitoring":
+                if p.mode == "silent":
+                    muting_count += 1
+                else:
+                    running_count += 1
+        
+        # 我們 呼叫（call）回調函式，把數字傳出去。
+        self.on_stats_change(running_count, muting_count)
 
     # ---------------------------
     # UI 建構
     # ---------------------------
 
-# 這裡，我們用「def」來定義（define）建立介面（UI）的函式。
+    # 這裡，我們用「def」來定義（define）建立介面（UI）的函式。
     def _build_ui(self) -> None:
         # 建立主佈局（main_layout），採用垂直佈局（QVBoxLayout），東西將從上往下排。
         main_layout = QVBoxLayout(self)
@@ -697,14 +715,31 @@ class SentryConsoleWindow(QWidget):
     # 從 backend_adapter 載入資料
     # ---------------------------
 
-# 這裡，我們用「def」來定義（define）重新載入專案的函式。
+    # 這裡，我們用「def」來定義（define）重新載入專案的函式。
     def _reload_projects_from_backend(self) -> None:
-        # 這個註釋（"""..."""）是說明文件，解釋函式的作用：呼叫後端（adapter）工具並刷新表格。
         """呼叫 adapter.list_projects()，並刷新表格內容。"""
-        
         # 呼叫（call）後端（adapter）的 list_projects 函式，獲取所有的專案列表。
         # 並將結果存回我們在 __init__ 準備的「空籃子」（self.current_projects）中。
         self.current_projects = adapter.list_projects()
+
+        # 【修復】載入完資料後，立刻算一次人頭。
+        self._notify_stats_update()
+
+        self.project_table.setRowCount(len(self.current_projects))
+
+        # --- [Task J] 計算統計數據 ---
+        running_count = 0
+        muting_count = 0
+        for p in self.current_projects:
+            if p.status == "monitoring":
+                if p.mode == "silent":
+                    muting_count += 1
+                else:
+                    running_count += 1
+        
+        # 如果有設定回調，就通知上層更新 Tooltip
+        if self.on_stats_change:
+            self.on_stats_change(running_count, muting_count)
 
         # 設定表格的行數（setRowCount），使其等於當前專案的數量（len）。
         self.project_table.setRowCount(len(self.current_projects))
@@ -915,6 +950,9 @@ class SentryConsoleWindow(QWidget):
         # 用新的更新後的專案物件（updated）替換掉「專案籃子」（self.current_projects）中原本位置的舊物件。
         self.current_projects[row] = updated
 
+        # 【關鍵修復】狀態改變了，這裡一定要重新算一次人頭！
+        self._notify_stats_update()
+
         # 5. 更新表格顯示（狀態 & 模式）
         # 獲取（get）表格中指定行（row）的狀態（第 2 欄）和模式（第 3 欄）項目。
         status_item = self.project_table.item(row, 2)
@@ -1065,6 +1103,10 @@ class SentryConsoleWindow(QWidget):
 # 我們用「def」來定義（define）執行編輯專案函式。
     def _perform_edit_project(self, uuid: str, name: str) -> None:
         """打開編輯視窗，並呼叫後端修改專案。"""
+
+        # 在打開編輯視窗前，強制從後端讀取最新狀態，防止「殘影」
+        self._reload_projects_from_backend()
+
         # 1. 找到專案的完整資料
         target_proj = next((p for p in self.current_projects if p.uuid == uuid), None)
         if not target_proj:
@@ -1427,39 +1469,26 @@ class SentryConsoleWindow(QWidget):
 
 
 class SentryTrayApp:
-    # 這個註釋（"""..."""）是說明文件，解釋這個類別的作用。
     """系統托盤應用程式：負責托盤圖示與主控台視窗。"""
 
-    # 這裡，我們用「def」來定義（define）物件被建立時會自動執行的函式（__init__）。
     def __init__(self, app: QApplication) -> None:
-        # 將傳入的應用程式物件（app）儲存起來。
         self.app = app
-        # 建立（instantiate）主控制台視窗（SentryConsoleWindow）物件。
-        self.console = SentryConsoleWindow()
-
-        # 載入托盤圖示
-        # 呼叫（call）_load_icon 函式，獲取要顯示的圖標（icon）。
+        
+        # [Task J] 載入圖示 (先載入圖示，後面建立 Tray 時會用到)
         icon = self._load_icon()
-
-        # 建立系統托盤圖標（QSystemTrayIcon），並傳入圖標和應用程式物件。
         self.tray_icon = QSystemTrayIcon(icon, self.app)
-        # 設定滑鼠懸停在圖標上時會顯示的提示文字（setToolTip）。
-        self.tray_icon.setToolTip("Laplace Sentry 控制台")
+        
+        # [Task J] 傳入 update_tooltip 作為回調
+        self.console = SentryConsoleWindow(on_stats_change=self.update_tooltip)
 
         # 建立右鍵選單
-        # 建立一個選單（QMenu）物件。
         menu = QMenu()
-        # 呼叫（call）_build_menu 函式來填充選單內容（這個函式我們之後會寫）。
         self._build_menu(menu)
-        # 把這個選單設定（setContextMenu）為托盤圖標的右鍵選單。
         self.tray_icon.setContextMenu(menu)
 
-        # 左鍵點擊托盤 → 打開控制台
-        # 綁定（connect）托盤圖標被激活（activated）的事件，到處理函式 _on_activated。
+        # 左鍵點擊托盤 → 切換顯示/隱藏
         self.tray_icon.activated.connect(self._on_activated)
 
-        # 顯示托盤
-        # 讓系統托盤圖標顯示出來（show()）。
         self.tray_icon.show()
 
     # 這裡，我們用「def」來定義（define）載入托盤圖標的函式。
@@ -1528,13 +1557,27 @@ class SentryTrayApp:
         # 確保視窗堆疊順序正確（raise_()）。
         self.console.raise_()
 
+    def update_tooltip(self, running: int, muting: int) -> None:
+        """[Task J] 動態更新托盤提示文字"""
+        if running == 0 and muting == 0:
+            msg = "Sentry: 目前無監控"
+        else:
+            msg = f"Sentry: {running} 個監控中"
+            if muting > 0:
+                msg += f" / {muting} 個靜默中"
+        
+        self.tray_icon.setToolTip(msg)
+
     # 這裡，我們用「def」來定義（define）托盤圖示被激活時（activated）的處理函式。
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        """托盤圖示被點擊時的行為：左鍵 → 打開控制台。"""
-        # 用「if」來判斷：如果（if）被激活的原因是滑鼠左鍵點擊（Trigger）...
+        """托盤圖示被點擊時的行為：左鍵 → 切換 顯示/隱藏。"""
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            # 就呼叫（call）show_console 函式來顯示控制台。
-            self.show_console()
+            if self.console.isVisible():
+                # 如果看得到，就藏起來
+                self.console.hide()
+            else:
+                # 如果藏起來，就顯示並拉到最前
+                self.show_console()
 
 
 # 這裡，我們用「def」來定義（define）應用程式的主入口點（main）。

@@ -7,6 +7,11 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# 之後如果有 log or temp
+# IDE 設定 (新增)
+.vscode/
+
+# Logs & Temp
 logs/
 tmp/
+temp/
+*.log
