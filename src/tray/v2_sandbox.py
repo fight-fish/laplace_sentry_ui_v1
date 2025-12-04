@@ -1017,9 +1017,14 @@ class EditProjectDialog(QDialog):
 # ==========================================
 from PySide6.QtWidgets import QTextEdit
 
+# ==========================================
+#   [New] 日誌瀏覽器 (Log Viewer) - 時間軸版
+# ==========================================
+from PySide6.QtWidgets import QTextEdit
+
 class LogViewerWidget(QTextEdit):
     """
-    黑底白字的日誌顯示器 (內建翻譯機)。
+    黑底白字的日誌顯示器 (內建翻譯機 + 時間軸)。
     """
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1039,16 +1044,34 @@ class LogViewerWidget(QTextEdit):
         self.setPlaceholderText("請選擇左側專案以查看日誌...")
 
     def set_logs(self, logs: list[str]):
-        """更新日誌內容 (自動翻譯)"""
+        """更新日誌內容 (自動翻譯 + 時間軸分組)"""
         if not logs:
             self.setPlaceholderText("此專案目前沒有日誌紀錄。")
             self.clear()
             return
             
-        # 逐行翻譯並組合成 HTML
         html_content = ""
+        last_date = None
+        import re
+
         for line in logs:
-            html_content += self._humanize_log_line(line) + "<br>"
+            # 1. 嘗試提取日期 (格式: [YYYY-MM-DD HH:MM:SS])
+            match = re.search(r"\[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})\]", line)
+            
+            if match:
+                date_str = match.group(1) # YYYY-MM-DD
+                time_str = match.group(2) # HH:MM:SS
+                
+                # 如果日期變了，插入一個日期標題
+                if date_str != last_date:
+                    html_content += f'<br><b><font color="#44AAFF">📅 {date_str}</font></b><br>'
+                    last_date = date_str
+                
+                # 呼叫翻譯機 (傳入 time_str 讓它只顯示時間)
+                html_content += self._humanize_log_line(line, time_str) + "<br>"
+            else:
+                # 沒時間戳記的行 (例如舊日誌或系統訊息)，直接翻譯
+                html_content += self._humanize_log_line(line, None) + "<br>"
             
         self.setHtml(html_content)
         
@@ -1057,52 +1080,53 @@ class LogViewerWidget(QTextEdit):
         cursor.movePosition(cursor.MoveOperation.End)
         self.setTextCursor(cursor)
 
-    def _humanize_log_line(self, raw_line: str) -> str:
+    def _humanize_log_line(self, raw_line: str, time_str: str | None) -> str:
         """[核心] 將原始日誌翻譯為彩色 HTML"""
         import re
         
+        # 定義時間前綴 (如果有傳入 time_str 就用它，否則不顯示)
+        t_prefix = f'<font color="#666666">{time_str}</font> ' if time_str else ""
+
         # 1. 哨兵啟動/停止
         if "哨兵啟動" in raw_line:
-            return f'<font color="#00FFFF">👁️ <b>哨兵已就位，開始監控</b></font>'
+            return f'{t_prefix}<font color="#00FFFF">👁️ <b>哨兵已就位，開始監控</b></font>'
         if "Stopping sentry" in raw_line or "已成功發送終止信號" in raw_line:
-            return f'<font color="#888888">💤 哨兵已暫停值勤</font>'
+            return f'{t_prefix}<font color="#888888">💤 哨兵已暫停值勤</font>'
 
         # 2. 檔案事件 (Created / Modified / Deleted)
-        # 原始格式範例: [11:35:46] [偵測] modified: readme.md
-        # 我們試著提取時間與檔名
-        match = re.search(r"\[(\d{2}:\d{2}:\d{2})\].*?(created|modified|deleted): (.+)", raw_line)
+        # 注意：這裡的 regex 只需要抓 event 和 filename，時間已經在外面抓過了
+        match = re.search(r"\[偵測\] (created|modified|deleted): (.+)", raw_line)
         if match:
-            time_str = match.group(1) # 11:35:46
-            event_type = match.group(2)
-            filename = match.group(3)
+            event_type = match.group(1)
+            filename = match.group(2)
             
-            # 去掉完整路徑，只留檔名 (如果太長)
+            # 去掉完整路徑，只留檔名
             if "/" in filename or "\\" in filename:
                 from pathlib import Path
                 filename = Path(filename).name
 
             if event_type == "created":
-                return f'<font color="#888888">{time_str}</font> <font color="#00FF00">✨ 發現新檔案</font> : {filename}'
+                return f'{t_prefix}<font color="#00FF00">✨ 發現新檔案</font> : {filename}'
             if event_type == "modified":
-                return f'<font color="#888888">{time_str}</font> <font color="#FFFFFF">📝 偵測到變更</font> : {filename}'
+                return f'{t_prefix}<font color="#FFFFFF">📝 偵測到變更</font> : {filename}'
             if event_type == "deleted":
-                return f'<font color="#888888">{time_str}</font> <font color="#FF5555">🗑️ 檔案已移除</font> : {filename}'
+                return f'{t_prefix}<font color="#FF5555">🗑️ 檔案已移除</font> : {filename}'
 
-        # 3. 過熱/靜默
+        # 3. 過熱/靜默 (補回 Muting triggered)
         if "智能靜默" in raw_line or "Muting triggered" in raw_line:
-            return f'<font color="#FFFF00">🛡️ <b>觸發過熱保護 (進入靜默模式)</b></font>'
+            return f'{t_prefix}<font color="#FFFF00">🛡️ <b>觸發過熱保護 (進入靜默模式)</b></font>'
         
         # 4. 更新指令
         if "成功觸發更新指令" in raw_line:
-            return f'<font color="#44AAFF">✅ 正在執行目錄樹更新...</font>'
+            return f'{t_prefix}<font color="#44AAFF">✅ 正在執行目錄樹更新...</font>'
 
-        # 5. 黑名單/系統訊息 (過濾掉或淡化)
+        # 5. 黑名單/系統訊息 (淡化處理)
         if "OUTPUT-FILE-BLACKLIST" in raw_line:
             return f'<font color="#555555">🔒 安全機制：已自動排除輸出檔監控</font>'
         if "[Step]" in raw_line:
             return f'<font color="#555555">{raw_line}</font>'
 
-        # 預設：原樣顯示 (灰色)
+        # 預設：原樣顯示
         return f'<font color="#AAAAAA">{raw_line}</font>'
 class DashboardWidget(QWidget):
     """
