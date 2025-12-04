@@ -532,6 +532,19 @@ class BackendAdapter:
         # 我們將 patterns 列表展開 (*patterns) 作為參數傳遞
         self._run_wsl_command("update_ignore_patterns", uuid, *patterns)
 
+        # 這裡，我們用「def」來定義（define）獲取日誌內容的函式。
+    def get_log_content(self, uuid: str) -> List[str]:
+        """呼叫 WSL 獲取指定專案的日誌內容。"""
+        if not uuid:
+            return []
+        
+        # 呼叫後端指令：get_log <uuid>
+        result = self._run_wsl_command("get_log", uuid)
+        
+        if isinstance(result, list):
+            return [str(x) for x in result]
+        return []
+
 # ============================
 #  模組層：給 tray_app 使用的單例介面
 # ============================
@@ -714,7 +727,12 @@ def match_project_by_path(local_path: str) -> Optional[ProjectInfo]:
         if proj_path_clean == target_clean:
             return proj
             
-    return None
+    return 
+
+# 這裡，我們用「def」來定義（define）對外提供的獲取日誌函式。
+def get_log_content(uuid: str) -> List[str]:
+    adapter = _ensure_adapter()
+    return adapter.get_log_content(uuid)
 
 # ============================
 # Demo（可直接 python -m src.backend.adapter）

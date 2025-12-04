@@ -1012,7 +1012,98 @@ class EditProjectDialog(QDialog):
             
         return changes  
 
+# ==========================================
+#   [New] 日誌瀏覽器 (Log Viewer) - 翻譯版
+# ==========================================
+from PySide6.QtWidgets import QTextEdit
 
+class LogViewerWidget(QTextEdit):
+    """
+    黑底白字的日誌顯示器 (內建翻譯機)。
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        # 設定樣式：黑底、灰字、等寬字體
+        self.setStyleSheet("""
+            QTextEdit {
+                background-color: #1e1e1e;
+                color: #d4d4d4;
+                font-family: 'Microsoft JhengHei', 'Segoe UI Emoji', monospace;
+                font-size: 10pt;
+                border: 1px solid #333333;
+                border-radius: 4px;
+                padding: 5px;
+            }
+        """)
+        self.setPlaceholderText("請選擇左側專案以查看日誌...")
+
+    def set_logs(self, logs: list[str]):
+        """更新日誌內容 (自動翻譯)"""
+        if not logs:
+            self.setPlaceholderText("此專案目前沒有日誌紀錄。")
+            self.clear()
+            return
+            
+        # 逐行翻譯並組合成 HTML
+        html_content = ""
+        for line in logs:
+            html_content += self._humanize_log_line(line) + "<br>"
+            
+        self.setHtml(html_content)
+        
+        # 自動捲動到底部
+        cursor = self.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.setTextCursor(cursor)
+
+    def _humanize_log_line(self, raw_line: str) -> str:
+        """[核心] 將原始日誌翻譯為彩色 HTML"""
+        import re
+        
+        # 1. 哨兵啟動/停止
+        if "哨兵啟動" in raw_line:
+            return f'<font color="#00FFFF">👁️ <b>哨兵已就位，開始監控</b></font>'
+        if "Stopping sentry" in raw_line or "已成功發送終止信號" in raw_line:
+            return f'<font color="#888888">💤 哨兵已暫停值勤</font>'
+
+        # 2. 檔案事件 (Created / Modified / Deleted)
+        # 原始格式範例: [11:35:46] [偵測] modified: readme.md
+        # 我們試著提取時間與檔名
+        match = re.search(r"\[(\d{2}:\d{2}:\d{2})\].*?(created|modified|deleted): (.+)", raw_line)
+        if match:
+            time_str = match.group(1) # 11:35:46
+            event_type = match.group(2)
+            filename = match.group(3)
+            
+            # 去掉完整路徑，只留檔名 (如果太長)
+            if "/" in filename or "\\" in filename:
+                from pathlib import Path
+                filename = Path(filename).name
+
+            if event_type == "created":
+                return f'<font color="#888888">{time_str}</font> <font color="#00FF00">✨ 發現新檔案</font> : {filename}'
+            if event_type == "modified":
+                return f'<font color="#888888">{time_str}</font> <font color="#FFFFFF">📝 偵測到變更</font> : {filename}'
+            if event_type == "deleted":
+                return f'<font color="#888888">{time_str}</font> <font color="#FF5555">🗑️ 檔案已移除</font> : {filename}'
+
+        # 3. 過熱/靜默
+        if "智能靜默" in raw_line or "Muting triggered" in raw_line:
+            return f'<font color="#FFFF00">🛡️ <b>觸發過熱保護 (進入靜默模式)</b></font>'
+        
+        # 4. 更新指令
+        if "成功觸發更新指令" in raw_line:
+            return f'<font color="#44AAFF">✅ 正在執行目錄樹更新...</font>'
+
+        # 5. 黑名單/系統訊息 (過濾掉或淡化)
+        if "OUTPUT-FILE-BLACKLIST" in raw_line:
+            return f'<font color="#555555">🔒 安全機制：已自動排除輸出檔監控</font>'
+        if "[Step]" in raw_line:
+            return f'<font color="#555555">{raw_line}</font>'
+
+        # 預設：原樣顯示 (灰色)
+        return f'<font color="#AAAAAA">{raw_line}</font>'
 class DashboardWidget(QWidget):
     """
     Sentry 控制台主視窗（接 backend_adapter 的雛型）
@@ -1045,6 +1136,12 @@ class DashboardWidget(QWidget):
                 
         # 載入資料
         self._load_ignore_settings()
+
+        # [New] 日誌自動刷新計時器
+        # 每 2 秒 (2000ms) 自動重新讀取一次日誌
+        self.log_timer = QTimer(self)
+        self.log_timer.timeout.connect(self._refresh_current_log)
+        self.log_timer.start(2000)
 
     # --- [新增] 獨立的統計通知函式 ---
     # 我們用「def」來 定義（define）重新計算並通知上層的函式。
@@ -1143,78 +1240,6 @@ class DashboardWidget(QWidget):
         self.project_table.itemDoubleClicked.connect(
             self._on_project_double_clicked
         )
-
-
-    def _build_input_fields(self) -> None:
-        """
-        [移植自 v1.8] 建立新增專案的輸入欄位（支援 1 個專案資料夾 + 3 個寫入檔）。
-        """
-        # 建立一個叫 new_input_fields 的「空籃子」（List），用來存放所有輸入框物件。
-        self.new_input_fields: list[QLineEdit] = []
-        self.new_browse_buttons: list[QPushButton] = [] # 瀏覽按鈕列表
-
-        # --- 1. 建立別名輸入列 (預設隱藏) ---
-        self.alias_container = QWidget()
-        alias_layout = QHBoxLayout(self.alias_container)
-        alias_layout.setContentsMargins(0, 0, 0, 0)
-        
-        alias_label = QLabel("專案別名：")
-        self.alias_edit = QLineEdit()
-        self.alias_edit.setPlaceholderText("可選：自訂顯示名稱")
-        
-        alias_layout.addWidget(alias_label)
-        alias_layout.addWidget(self.alias_edit)
-        self.new_project_input_layout.addWidget(self.alias_container)
-        self.alias_container.setVisible(False)
-        
-        # 2. 專案資料夾列 (索引 0)
-        folder_row = QHBoxLayout()
-        folder_label = QLabel("專案資料夾：")
-        self.new_project_folder_edit = QLineEdit()
-        self.new_project_folder_edit.setPlaceholderText("例如：/home/user/my_project")
-        self.new_project_folder_button = QPushButton("瀏覽…")
-
-        folder_row.addWidget(folder_label)
-        folder_row.addWidget(self.new_project_folder_edit, stretch=1)
-        folder_row.addWidget(self.new_project_folder_button)
-        self.new_project_input_layout.addLayout(folder_row)
-        
-        self.new_input_fields.append(self.new_project_folder_edit)
-        self.new_browse_buttons.append(self.new_project_folder_button)
-        
-        # 3. 寫入檔路徑列 (索引 1, 2, 3 - 最多 3 個)
-        for i in range(1, 4):
-            output_row = QHBoxLayout()
-            output_label = QLabel(f"寫入檔 {i}：")
-            output_edit = QLineEdit()
-            output_edit.setPlaceholderText(f"目標 Markdown 文件 {i}")
-            output_button = QPushButton("瀏覽…")
-            
-            output_row.addWidget(output_label)
-            output_row.addWidget(output_edit, stretch=1)
-            output_row.addWidget(output_button)
-
-            self.new_project_input_layout.addLayout(output_row)
-
-            self.new_input_fields.append(output_edit)
-            self.new_browse_buttons.append(output_button)
-
-        # 4. 事件連結 (Signal/Slot)
-        # 重新接上神經：綁定「瀏覽…」按鈕的點擊事件
-        for btn in self.new_browse_buttons:
-            # 使用 lambda 鎖定按鈕實例 b=btn
-            btn.clicked.connect(lambda checked, b=btn: self._on_select_new_path(b))
-
-        # 重新接上神經：綁定輸入框的文字變動事件
-        for edit in self.new_input_fields:
-            edit.textChanged.connect(self._update_new_project_submit_state)
-        self.new_project_input_layout.addStretch(1)
-
-    def _toggle_input_mode(self, checked: bool) -> None:
-        """[移植自 v1.8] 切換輸入模式：控制別名欄位的顯隱"""
-        self.alias_container.setVisible(checked)
-        if not checked:
-            self.alias_edit.clear()
             
 # 這裡，我們用「def」來定義（define）建立專案表格的函式。
     def _build_project_table(self) -> QTableWidget:
@@ -1290,52 +1315,14 @@ class DashboardWidget(QWidget):
         # 加入分隔線
         layout.addSpacing(16)
 
-        # --- 下半部：新增/調試專案區 (恢復入口，作為 View A 的後備基地) ---
-        
-        # 建立一個框架來容納新增區塊，使其與詳情區分隔
-        group_new_container = QFrame()
-        group_new_container.setFrameShape(QFrame.Shape.StyledPanel)
-        group_layout = QVBoxLayout(group_new_container)
-        
-        # 建立一個水平佈局，用來放標題和模式開關
-        title_layout = QHBoxLayout()
-        title_label = QLabel("新增專案 / 自由更新 (後備入口)")
-        font = title_label.font()
-        font.setBold(True)
-        title_label.setFont(font)
-        
-        # 模式開關 (預設不勾選)
-        self.mode_checkbox = QCheckBox("自訂別名 (自由模式)")
-        self.mode_checkbox.toggled.connect(self._toggle_input_mode)
+        # --- [New] 下半部：日誌瀏覽器 ---
+        # 標題
+        log_title = QLabel("<b>哨兵日誌 (Live Logs)</b>")
+        layout.addWidget(log_title)
 
-        title_layout.addWidget(title_label)
-        title_layout.addStretch(1) 
-        title_layout.addWidget(self.mode_checkbox)
-        group_layout.addLayout(title_layout)
-
-        # 輸入框容器
-        self.new_project_input_layout = QVBoxLayout()
-        group_layout.addLayout(self.new_project_input_layout)
-        
-        # 呼叫專門負責建立這些輸入框的函式
-        self._build_input_fields()
-
-        # [新增] 拖曳提示區 (提示使用者主要拖曳應在 View A)
-        self.drag_tip = QLabel("提示：主要拖曳新增功能在「哨兵之眼 (View A)」")
-        self.drag_tip.setStyleSheet("color: gray; font-size: 10px;")
-        group_layout.addWidget(self.drag_tip)
-
-
-        # 送出按鈕
-        self.new_project_submit_button = QPushButton("確認新增 / 執行更新")
-        self.new_project_submit_button.setEnabled(False)
-        # 注意：這裡我們需要綁定一個實際的提交函式，我們暫時複用 _on_submit_new_project 的名字
-        self.new_project_submit_button.clicked.connect(self._on_submit_new_project)
-        group_layout.addWidget(self.new_project_submit_button)
-        
-        layout.addWidget(group_new_container) # 將整個群組加入主佈局
-        layout.addStretch(1) # 空白推底
-
+        # 植入我們剛剛寫好的元件
+        self.log_viewer = LogViewerWidget()
+        layout.addWidget(self.log_viewer)
 
         # 回傳（return）設定好的框架元件。
         return frame
@@ -1458,6 +1445,27 @@ class DashboardWidget(QWidget):
             # [關鍵修正] 無論如何，最後一定要把訊號接回去，不然使用者就不能點擊了
             self.project_table.blockSignals(False)
 
+    def _refresh_current_log(self):
+        """[自動呼叫] 刷新當前選中專案的日誌"""
+        # 如果視窗沒顯示，就不用浪費效能去抓
+        if not self.isVisible():
+            return
+
+        # 獲取當前選中的行
+        row = self.project_table.currentRow()
+        if row < 0 or row >= len(self.current_projects):
+            return
+
+        # 獲取 UUID
+        proj = self.current_projects[row]
+        
+        # 呼叫 Adapter 獲取最新日誌
+        logs = adapter.get_log_content(proj.uuid)
+        
+        # 更新顯示 (LogViewerWidget 會自動處理捲動)
+        if hasattr(self, 'log_viewer'):
+            self.log_viewer.set_logs(logs)
+
     def _open_ignore_settings_dialog(self) -> None:
         """打開忽略規則設定視窗"""
         # 1. 獲取當前選中的專案
@@ -1566,12 +1574,13 @@ class DashboardWidget(QWidget):
         # 獲取（get）目前選取的行號（currentRow）。
         row = self.project_table.currentRow()
         
-        # 用「if」來判斷：如果（if）行號小於 0（沒選到）或者超過了專案總數...
+        # 用「if」來判斷：如果（if）行號小於 0（沒選取）...
         if row < 0 or row >= len(self.current_projects):
-            # 就呼叫（call）_update_detail_panel 函式，並傳入 None（代表清空詳情面板）。
             self._update_detail_panel(None)
             self.btn_tree_ignore.setEnabled(False)
-            # 用「return」結束這個函式。
+            # [New] 清空日誌
+            if hasattr(self, 'log_viewer'):
+                self.log_viewer.set_logs([])
             return
 
         # 從「專案籃子」（self.current_projects）中，根據行號（row）取出選取的專案（proj）。
@@ -1582,92 +1591,12 @@ class DashboardWidget(QWidget):
         # 有選到專案，啟用按鈕
         self.btn_tree_ignore.setEnabled(True) 
 
-        # DashboardWidget 類別內 (貼入)
+        # [New] 讀取並顯示日誌
+        # 呼叫 Adapter 獲取該專案的日誌內容
+        logs = adapter.get_log_content(proj.uuid)
+        # 餵給顯示器
+        self.log_viewer.set_logs(logs)
     
-    def _on_submit_new_project(self) -> None:
-        """處理新增專案 / 自由更新"""
-        # 1. 獲取路徑
-        folder = self.new_input_fields[0].text().strip()
-        primary_output = self.new_input_fields[1].text().strip()
-
-        if not folder or not primary_output:
-            return
-
-        # 2. 決定名稱
-        from pathlib import Path
-        default_name = Path(folder).name or "New Project"
-        
-        alias_input = self.alias_edit.text().strip()
-        use_alias = self.alias_container.isVisible() and bool(alias_input)
-        name = alias_input if use_alias else default_name
-
-        # 3. 呼叫後端 (自動重試邏輯)
-        while True:
-            try:
-                adapter.add_project(name=name, path=folder, output_file=primary_output)
-                
-                # 成功
-                QMessageBox.information(self, "成功", f"專案 '{name}' 已新增。")
-                
-                # 清空欄位並重整
-                for edit in self.new_input_fields:
-                    edit.clear()
-                self.alias_edit.clear()
-                self._update_new_project_submit_state()
-                self._reload_projects_from_backend()
-                break
-
-            except Exception as e:
-                error_msg = str(e)
-                if "已被佔用" in error_msg:
-                    # 重名處理
-                    new_name, ok = QInputDialog.getText(
-                        self, "名稱衝突", f"名稱 '{name}' 已存在，請輸入新名稱：", text=name + "_new"
-                    )
-                    if ok and new_name:
-                        name = new_name.strip()
-                        continue # 重試
-                    else:
-                        return # 取消
-                else:
-                    QMessageBox.critical(self, "失敗", error_msg)
-                    return
-        
-    def _on_select_new_path(self, button: QPushButton) -> None:
-        """處理瀏覽按鈕點擊"""
-        try:
-            index = self.new_browse_buttons.index(button)
-        except ValueError:
-            return
-
-        target_edit = self.new_input_fields[index]
-
-        if index == 0:
-            # 索引 0 = 專案資料夾
-            path = QFileDialog.getExistingDirectory(self, "選擇專案資料夾")
-            if path:
-                target_edit.setText(path)
-        else:
-            # 索引 > 0 = 寫入檔 (允許選擇不存在的檔案，因為這是手動模式)
-            file_path, _ = QFileDialog.getSaveFileName(
-                self, f"選擇寫入檔路徑 {index}", "", "Markdown (*.md);;All Files (*.*)"
-            )
-            if file_path:
-                target_edit.setText(file_path)
-        
-        # 觸發狀態檢查
-        self._update_new_project_submit_state()
-
-    def _update_new_project_submit_state(self) -> None:
-        """檢查必要欄位是否已填寫"""
-        if not hasattr(self, 'new_input_fields') or len(self.new_input_fields) < 2:
-            return
-
-        folder_ok = bool(self.new_input_fields[0].text().strip())
-        output_ok = bool(self.new_input_fields[1].text().strip())
-        
-        self.new_project_submit_button.setEnabled(folder_ok and output_ok)
-
     # 這裡，我們用「def」來定義（define）當專案列表被雙擊時（double_clicked）執行的函式。
     def _on_project_double_clicked(self) -> None:
         """雙擊列 → 切換監控狀態。"""
