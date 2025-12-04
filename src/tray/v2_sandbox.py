@@ -15,7 +15,8 @@ from PySide6.QtCore import (
     QSize, 
     QTimer,            # (心跳計時器)
     QPropertyAnimation,# (動畫工具，預留給之後用)
-    QEasingCurve
+    QEasingCurve,
+    Signal,
 )
 
 from PySide6.QtGui import (
@@ -238,6 +239,10 @@ class SentryEyeWidget(QWidget):
         bottom_layout.addWidget(self.btn_dashboard)
         layout.addLayout(bottom_layout)
 
+        # [Task 9.4] 初始化偏好開關，預設為開啟（True）。
+        self.enable_guidance = True
+        self.enable_smart_match = True
+
     def _trigger_saccade(self): 
         """隨機產生眼球移動目標""" 
         import random 
@@ -268,6 +273,15 @@ class SentryEyeWidget(QWidget):
         # [設定] 設定為 1，表示這次眨完後，還要「再眨 1 次」(共 2 次)
         # 如果您想要單次眨眼，改成 0 即可
         self.blink_repeats = 1
+
+    def set_preferences(self, guidance: bool, smart_match: bool):
+        """[Task 9.4] 這是接收外部設定的「接口」，用來更新開關狀態。"""
+        self.enable_guidance = guidance
+        self.enable_smart_match = smart_match
+
+        # 如果（if）關閉了引導，且氣泡還在顯示，就把它藏起來（hide）。
+        if not guidance and hasattr(self, 'bubble'):
+            self.bubble.hide()
 
     def resizeEvent(self, event):
         """當視窗大小改變時，調整氣泡位置"""
@@ -516,8 +530,8 @@ class SentryEyeWidget(QWidget):
         if path_obj.is_dir():
             # Layer 2: 智慧預設
             default_file = self._find_default_output_file(path_obj)
-            
-            if default_file:
+            # 我們用「if」同時檢查：是否開啟了智慧配對（enable_smart_match）以及是否找到了預設檔。
+            if self.enable_smart_match and default_file:
                 # [氣泡] 預設檔命中提示 (在彈出輸入框前先給個提示)
                 self.bubble.show_message("✨ 已鎖定預設檔，準備啟動...", 2000)
                 # 這裡稍微延遲一下再彈出輸入框，讓氣泡能被看到
@@ -526,8 +540,9 @@ class SentryEyeWidget(QWidget):
                 # Layer 3: 飢餓模式
                 self.pending_folder = str(path_obj)
                 self.update() 
-                # [氣泡] 引導提示 (顯示久一點：8秒)
-                self.bubble.show_message("🟠 收到資料夾！\n請再拖入「寫入檔」給我...", 8000)
+                # 用「if」判斷：只有在開啟引導（enable_guidance）時，才顯示氣泡8秒。
+                if self.enable_guidance:
+                    self.bubble.show_message("🟠 收到資料夾！\n請再拖入「寫入檔」給我...", 8000)
             event.accept()
             
         elif path_obj.is_file():
@@ -1130,8 +1145,10 @@ class LogViewerWidget(QTextEdit):
         return f'<font color="#AAAAAA">{raw_line}</font>'
 class DashboardWidget(QWidget):
     """
-    Sentry 控制台主視窗（接 backend_adapter 的雛型）
+    Sentry 控制台主視窗
     """
+    # [Task 9.4] 定義訊號：(是否啟用引導, 是否啟用智慧配對)
+    preferences_changed = Signal(bool, bool)
 
     # 我們用「def」來 定義（define）初始化方法，並接收統計回調（on_stats_change）。
     def __init__(self, on_stats_change=None, switch_callback=None) -> None:
@@ -1381,6 +1398,29 @@ class DashboardWidget(QWidget):
         self.status_message_label.setStyleSheet("color: #666666;")
         left_panel.addWidget(self.status_message_label)
 
+        # [Task 9.4] 偏好設定區塊
+        pref_layout = QHBoxLayout()
+        pref_layout.setContentsMargins(0, 10, 0, 10) # 上下留白
+        
+        self.check_guidance = QCheckBox("啟用氣泡引導")
+        self.check_guidance.setChecked(True)
+        self.check_guidance.setToolTip("開啟後，哨兵會在桌面顯示操作提示氣泡")
+        
+        self.check_smart = QCheckBox("啟用智慧配對")
+        self.check_smart.setChecked(True)
+        self.check_smart.setToolTip("開啟後，拖曳資料夾時會自動尋找 README.md")
+        
+        # 綁定事件：當勾選改變時，呼叫 _on_pref_changed
+        self.check_guidance.toggled.connect(self._on_pref_changed)
+        self.check_smart.toggled.connect(self._on_pref_changed)
+        
+        pref_layout.addWidget(self.check_guidance)
+        pref_layout.addWidget(self.check_smart)
+        pref_layout.addStretch(1)
+        
+        # 把這個設定區加入左側面板
+        left_panel.addLayout(pref_layout)
+
         # 讓這兩行資訊貼上去，底下留空（addStretch(1)）。
         left_panel.addStretch(1)
 
@@ -1414,7 +1454,12 @@ class DashboardWidget(QWidget):
         # 回傳（return）設定好的框架元件。
         return frame
 
-
+    def _on_pref_changed(self):
+        """[Task 9.4] 當 Checkbox 變更時，發送訊號通知 Eye"""
+        g = self.check_guidance.isChecked()
+        s = self.check_smart.isChecked()
+        # 發射訊號！
+        self.preferences_changed.emit(g, s)
 
     # ---------------------------
     # 從 backend_adapter 載入資料
@@ -2045,6 +2090,8 @@ class SentryTrayAppV2:
         self.container.addWidget(self.view_a)
         # 索引 1 = View B
         self.container.addWidget(self.view_b)
+        # [Task 9.4] 連接 Dashboard 的偏好設定訊號到 Eye
+        self.view_b.preferences_changed.connect(self.view_a.set_preferences)
 
         # --- 改成呼叫 go_to_eye() 來初始化 ---
         # 這會同時設定頁面並將視窗縮小為 130x130

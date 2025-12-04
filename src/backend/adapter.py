@@ -449,6 +449,25 @@ class BackendAdapter:
             raise BackendError("【新增失敗】：專案資料夾路徑不得為空。")
         if not output_file:
             raise BackendError("【新增失敗】：寫入檔路徑不得為空。")
+        
+        # [Task 9.4.3] 安全防呆：防止迴圈監控
+        try:
+            p_source = Path(path).resolve()
+            p_target = Path(output_file).resolve()
+            
+            # --- [修正] 移除對一般專案的內部寫入限制 ---
+            # 規則 A：一般專案允許 target 在 source 內 (後端有黑名單機制可防迴圈)
+            # 只有在監控 Sentry 自身時才需要限制，但為了避免誤殺，這裡先放行。
+            
+            # 檢查 2: 禁止監控敏感系統目錄 (這部分保留)
+            # 這裡增加對 .venv 的過濾，這也是常見誤區
+            if p_source.name in ["logs", "temp", "data", ".venv"] or "projects.json" in str(p_source):
+                raise BackendError("【安全攔截】禁止監控系統保留目錄或設定檔！")
+            
+        except Exception as e:
+            if isinstance(e, BackendError):
+                raise e
+            print(f"[Warning] Path safety check failed: {e}")   
 
         # 呼叫通用通訊函式
         # 如果後端驗證失敗 (如路徑不存在、重名)，會拋出例外，被 UI 捕獲顯示紅字
