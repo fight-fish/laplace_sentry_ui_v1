@@ -89,8 +89,6 @@ class SentryEyeWidget(QWidget):
         super().__init__()
         # [新增] 告訴視窗：我願意接收拖曳進來的東西
         self.setAcceptDrops(True)
-        # 設定視窗旗標：無邊框 | 保持在最上層 | 工具視窗樣式
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
         # 設定背景透明
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
@@ -111,6 +109,30 @@ class SentryEyeWidget(QWidget):
         self.phase = 0
         # [新增] 吞噬動畫計數器 (0 = 無動畫, >0 = 播放中)
         self.eating_frame = 0
+
+        # [新增] 瞳孔運動神經
+        self.pupil_offset = QPoint(0, 0)       # 目前位置
+        self.target_offset = QPoint(0, 0)      # 目標位置
+
+        # [新增] 掃視計時器 (Saccade Timer)
+        self.saccade_timer = QTimer(self)
+        self.saccade_timer.timeout.connect(self._trigger_saccade)
+        self.saccade_timer.start(3000) # 初始每 3 秒動一次
+
+        # [新增] 眨眼計時器 (Blink Timer)
+        # 我們建立（create）一個計時器，專門控制眨眼。
+        self.blink_timer = QTimer(self)
+        # 時間到時，連結（connect）到觸發眨眼的方法。
+        self.blink_timer.timeout.connect(self._trigger_blink)
+        # 啟動（start）計時器，初始設定 4000 毫秒（4秒）。
+        self.blink_timer.start(4000)
+
+        # [新增] 眨眼狀態變數
+        # 這是一個旗標，標記目前是否正在（is）眨眼。
+        self.is_blinking = False
+        # 這是一個浮點數，記錄眼皮閉合的進度（0.0 全開 ~ 1.0 全閉）。
+        self.blink_progress = 0.0
+        self.blink_repeats = 0  # [新增] 剩餘眨眼次數
 
         # --- 佈局設計 (維持不變) ---
         layout = QVBoxLayout(self)
@@ -141,22 +163,61 @@ class SentryEyeWidget(QWidget):
         bottom_layout.addWidget(self.btn_dashboard)
         layout.addLayout(bottom_layout)
 
+    def _trigger_saccade(self): 
+        """隨機產生眼球移動目標""" 
+        import random 
+        # 隨機決定下一次動的時間 (2~5秒) 
+        self.saccade_timer.setInterval(random.randint(2000, 5000))
+        # 隨機決定看的方向 (範圍限制在 +/- 15px 以內，避免脫窗)
+        # 這裡使用整數簡化計算
+        rx = random.randint(-15, 15)
+        ry = random.randint(-10, 10) # 上下移動範圍小一點，比較自然
+        self.target_offset = QPoint(rx, ry)
+
+    def _trigger_blink(self):
+        """觸發眨眼動畫 (設定雙連眨)"""
+        import random
+        if self.eating_frame > 0:
+            return
+
+        # --- [教學] 修改這裡的數字來控制頻率 ---
+        # 4000 = 4秒, 8000 = 8秒
+        # 這表示：每隔 4~8 秒之間，會觸發一次眨眼
+        next_interval = random.randint(4000, 8000) 
+        self.blink_timer.setInterval(next_interval)
+        
+        # 開始眨眼
+        self.is_blinking = True
+        self.blink_progress = 0.0
+        
+        # [設定] 設定為 1，表示這次眨完後，還要「再眨 1 次」(共 2 次)
+        # 如果您想要單次眨眼，改成 0 即可
+        self.blink_repeats = 1
+        
     def paintEvent(self, event):
-        """繪製精細版哨兵之眼 (支援吞噬動畫 + 飢渴變色)"""
+        """繪製精細版哨兵之眼 (v2.1: 中空機械眼 + 雷射邊框)"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
         # --- 0. 動畫核心計算 ---
         self.phase += 0.1
         breath_factor = 0.85 + 0.15 * abs(math.sin(self.phase))
-        
+        # --- [新增] 瞳孔物理運動 (Ease-out 插值) ---
+        # 讓目前位置追趕目標位置，係數 0.1 代表速度
+        dx = self.target_offset.x() - self.pupil_offset.x()
+        dy = self.target_offset.y() - self.pupil_offset.y()
+
+        # 更新目前位置 (轉成整數以利繪圖)
+        new_x = self.pupil_offset.x() + int(dx * 0.1)
+        new_y = self.pupil_offset.y() + int(dy * 0.1)
+        self.pupil_offset = QPoint(new_x, new_y)
         # 狀態判斷
         is_eating = self.eating_frame > 0
         if is_eating:
             self.eating_frame -= 1
             breath_factor = 1.2 
             
-        # [新增] 判斷是否處於「飢渴狀態 (Hunting Mode)」
+        # 判斷是否處於「飢渴狀態 (Hunting Mode)」
         is_hungry = self.pending_folder is not None
 
         rect = self.rect()
@@ -164,6 +225,7 @@ class SentryEyeWidget(QWidget):
         w = rect.width()
         h = rect.height()
         
+        # [動態適配] 使用相對比例，而非固定數值
         eye_width = w * 0.8
         eye_height = h * 0.5
 
@@ -173,9 +235,9 @@ class SentryEyeWidget(QWidget):
             main_color = QColor(50, 255, 50)
             glow_color = QColor(0, 200, 0)
         elif is_hungry:
-            # [新增] 飢渴中：橘紅色 (警告/等待)
-            main_color = QColor(255, 140, 0) # 深橘
-            glow_color = QColor(255, 69, 0)  # 紅橘
+            # 飢渴中：橘紅色
+            main_color = QColor(255, 140, 0) 
+            glow_color = QColor(255, 69, 0)  
         else:
             # 正常：青色
             main_color = QColor(0, 255, 255)
@@ -199,7 +261,7 @@ class SentryEyeWidget(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(center, halo_radius, halo_radius)
         
-        # --- 2. 眼眶 ---
+        # --- 2. 眼眶 (上下眼瞼) ---
         path = QPainterPath()
         left_pt = QPoint(int(center.x() - eye_width/2), int(center.y()))
         right_pt = QPoint(int(center.x() + eye_width/2), int(center.y()))
@@ -214,32 +276,89 @@ class SentryEyeWidget(QWidget):
         pen_color = QColor(main_color)
         pen_color.setAlpha(255)
         pen_glow = QPen(pen_color)
-        pen_glow.setWidth(3 if is_eating else 2)
+        # [視覺微調] 使用浮點數寬度，讓線條更細緻 (1.5px / 2.5px)
+        pen_glow.setWidthF(2.5 if is_eating else 1.5)
         painter.setPen(pen_glow)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(path)
 
-        # --- 3. 瞳孔 ---
-        # [新增] 飢渴時瞳孔微張 (0.45 -> 0.55)，吞噬時收縮 (0.2)
+# --- 3. 瞳孔 (v2.1: 中空雷射環 + 物理運動) ---
+        # [關鍵 1] 計算瞳孔的新中心點 (原本的中心 + 偏移量)
+        pupil_center = center + self.pupil_offset
+
+        # [關鍵 2] 根據狀態決定瞳孔大小 (維持 Task 9.2.1 的邏輯)
         if is_eating:
             pupil_scale = 0.2
         elif is_hungry:
-            pupil_scale = 0.55 # 睜大眼睛找檔案
+            pupil_scale = 0.55 
         else:
-            pupil_scale = 0.45 # 正常冷靜
+            pupil_scale = 0.45 
 
         pupil_r = eye_height * pupil_scale
         
-        painter.setPen(Qt.PenStyle.NoPen)
-        # 虹膜顏色
-        pupil_color = QColor(main_color)
-        pupil_color.setAlpha(220 if not is_eating else 255)
-        painter.setBrush(QBrush(pupil_color))
-        painter.drawEllipse(center, pupil_r, pupil_r)
+        # [關鍵 3] 繪製 (注意：這裡全部改成用 pupil_center！)
         
-        # 內圈瞳孔 (黑色)
-        painter.setBrush(QBrush(QColor(0, 0, 0, 255)))
-        painter.drawEllipse(center, pupil_r * 0.6, pupil_r * 0.6)
+        # A. 虹膜 (透明 + 邊框)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        ring_pen = QPen(main_color)
+        ring_pen.setWidthF(1.5) 
+        painter.setPen(ring_pen)
+        # 使用新的中心點繪製
+        painter.drawEllipse(pupil_center, pupil_r, pupil_r)
+        
+        # B. 內圈瞳孔 (黑色實心)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(0, 0, 0, 220)))
+        # 使用新的中心點繪製
+        painter.drawEllipse(pupil_center, pupil_r * 0.6, pupil_r * 0.6)
+
+        # --- 4. 眨眼動畫 (v2.2: 單向 + 雙連眨) ---
+        if self.is_blinking:
+            # 增加進度 (0.35 = 眨得更快一點，因為要眨兩下)
+            self.blink_progress += 0.35
+
+            # 計算閉合程度
+            if self.blink_progress <= 1.0:
+                lid_factor = self.blink_progress
+            else:
+                lid_factor = 2.0 - self.blink_progress
+
+            # 動畫結束檢查
+            if self.blink_progress >= 2.0:
+                # [關鍵] 檢查是否需要連眨
+                if self.blink_repeats > 0:
+                    self.blink_repeats -= 1
+                    self.blink_progress = 0.0 # 重置進度，馬上再眨一次
+                    lid_factor = 0.0
+                else:
+                    # 真的結束了
+                    self.is_blinking = False
+                    self.blink_progress = 0.0
+                    lid_factor = 0.0
+
+            # 設定剪裁
+            painter.save()
+            painter.setClipPath(path)
+
+            # 計算眼皮高度
+            # 因為只從上面蓋下來，高度需要是原本的 2 倍才能蓋滿全眼
+            lid_h = int(eye_height * 2 * lid_factor)
+            
+            lid_color = QColor(main_color)
+            lid_color.setAlpha(200) 
+            painter.setBrush(QBrush(lid_color))
+            painter.setPen(Qt.PenStyle.NoPen)
+
+            # 只畫上眼瞼 (從上往下蓋)
+            # 起點 Y 是眼眶最高點 (center.y - eye_height)
+            painter.drawRect(
+                int(center.x() - eye_width/2), 
+                int(center.y() - eye_height), 
+                int(eye_width), 
+                lid_h
+            )
+            
+            painter.restore()
 
     # --- 實作無邊框視窗的拖曳功能 ---
     def mousePressEvent(self, event):
@@ -269,7 +388,7 @@ class SentryEyeWidget(QWidget):
             event.ignore()
 
     def dropEvent(self, event):
-        """處理放下事件：支援「雙階段拖曳」與「大小寫容錯」"""
+        """處理放下事件：三層意圖過濾 (Layer 1~3) - Adapter 對接版"""
         urls = event.mimeData().urls()
         if not urls:
             return
@@ -277,55 +396,65 @@ class SentryEyeWidget(QWidget):
         path_str = urls[0].toLocalFile()
         path_obj = Path(path_str)
         
-        # --- 情境 1: 正在等待餵食寫入檔 (Hunting Mode) ---
+        # --- [Priority 0] 解除飢餓狀態 ---
         if self.pending_folder:
             if path_obj.is_file():
-                # 收到檔案了！執行合體！
                 folder = self.pending_folder
                 target_file = path_str
-                
-                # 重置狀態
                 self.pending_folder = None
-                
-                # 執行新增
                 self._execute_add_project(folder, target_file)
                 event.accept()
             else:
-                QMessageBox.warning(self, "錯誤", "我正在等待一個「檔案」作為寫入目標，請不要給我資料夾。")
+                QMessageBox.warning(self, "錯誤", "我正在等待一個「檔案」作為寫入目標。")
                 event.ignore()
             return
 
-        # --- 情境 2: 正常拖曳 (Idle Mode) ---
-        
-        # A. 拖入資料夾 -> 嘗試快速新增，或進入等待模式
+        # --- [Layer 1] 舊雨判定 (交給 Adapter 判斷) ---
         if path_obj.is_dir():
-            # 1. 先找有沒有預設檔案 (大小寫通吃)
+            # 直接呼叫 Adapter 的新功能：檢查路徑是否已註冊
+            match_proj = adapter.match_project_by_path(path_str)
+
+            # 若命中 -> 執行對應操作
+            if match_proj:
+                if match_proj.status == "monitoring":
+                    # 狀態：監控中 -> 觸發手動更新
+                    adapter.trigger_manual_update(match_proj.uuid)
+                    QMessageBox.information(self, "哨兵之眼", f"專案「{match_proj.name}」監控中。\n已觸發單次更新！")
+                else:
+                    # 狀態：已停止 -> 啟動哨兵
+                    adapter.toggle_project_status(match_proj.uuid)
+                    QMessageBox.information(self, "哨兵之眼", f"歡迎回來，{match_proj.name}。\n哨兵已啟動！")
+                
+                event.accept()
+                return # [關鍵] 任務結束
+
+        # --- [Layer 2 & 3] 新專案處理 (維持原樣) ---
+        if path_obj.is_dir():
+            # Layer 2: 智慧預設
             default_file = self._find_default_output_file(path_obj)
             
             if default_file:
-                # 找到了！直接快速新增
                 self._execute_add_project(str(path_obj), default_file)
             else:
-                # 沒找到 -> 進入「飢餓狀態」
+                # Layer 3: 飢餓模式
                 self.pending_folder = str(path_obj)
+                self.update() 
                 QMessageBox.information(self, "收到資料夾", 
                                         f"已暫存專案路徑：\n{path_obj.name}\n\n"
                                         "⚠️ 找不到預設的 readme.md。\n"
                                         "👉 請現在「直接拖曳」您想寫入的 Markdown 檔案進來！")
             event.accept()
             
-        # B. 拖入檔案 -> 單次更新選單 (維持原樣)
         elif path_obj.is_file():
             menu = QMenu(self)
             menu.setStyleSheet("QMenu { background-color: rgba(20, 20, 30, 240); color: white; border: 1px solid #00FFFF; }")
-            
             action = QAction(f"⚡ 單次更新: {path_obj.name}", menu)
             action.triggered.connect(lambda: QMessageBox.information(self, "開發中", "單次更新功能即將上線！"))
             menu.addAction(action)
-            
             if not menu.isEmpty():
                 menu.exec(QCursor.pos())
                 event.accept()
+
 
     def _execute_add_project(self, folder, output_file):
         """[內部工具] 執行最終的新增動作"""
@@ -1878,17 +2007,12 @@ class SentryTrayAppV2:
         self.container.addWidget(self.view_a)
         # 索引 1 = View B
         self.container.addWidget(self.view_b)
-        
-        # 預設顯示（setCurrentIndex）第 0 頁 (View A)。
-        self.container.setCurrentIndex(0)
 
-        # 我們手動呼叫（call）View B 的資料載入，確保在 Tray Icon 已經建立之後才執行。
-        self.view_b._reload_projects_from_backend()
-        
-        # 啟動時直接顯示視窗，方便測試
-        self.container.show()
+        # --- 改成呼叫 go_to_eye() 來初始化 ---
+        # 這會同時設定頁面並將視窗縮小為 130x130
+        self.go_to_eye()
 
-        # 啟動時直接顯示視窗，方便測試
+        # 啟動時直接顯示視窗
         self.container.show()
 
         # 設定容器視窗屬性以支援透明背景
@@ -1896,16 +2020,20 @@ class SentryTrayAppV2:
         self.container.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
 
     def go_to_dashboard(self):
-        """切換到 View B"""
-        # [新增] 切換前，命令 View B 重新去後端拉取最新資料
+        """切換到 View B (展開)"""
+        # 1. 命令 View B 重新去後端拉取最新資料
         self.view_b._reload_projects_from_backend()
-        # 設定（setCurrentIndex）為 1。
+        # 2. 切換頁面
         self.container.setCurrentIndex(1)
+        # 3. [新增] 展開視窗為後台尺寸
+        self.container.resize(900, 600)
     
     def go_to_eye(self):
-        """切換到 View A"""
-        # 設定（setCurrentIndex）為 0。
+        """切換到 View A (縮微)"""
+        # 1. 切換頁面
         self.container.setCurrentIndex(0)
+        # 2. [新增] 縮小視窗為眼球尺寸
+        self.container.resize(130, 130)
 
     def toggle_window(self):
         """切換視窗顯示狀態"""

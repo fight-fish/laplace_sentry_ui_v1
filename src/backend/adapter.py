@@ -665,6 +665,58 @@ def update_ignore_patterns(uuid: str, patterns: List[str]) -> None:
     return adapter.update_ignore_patterns(uuid, patterns)
 
 # ============================
+#  [v9.2.3 新增] 路徑比對邏輯 (把髒活藏在 Adapter)
+# ============================
+
+def _local_to_wsl_path(local_path: str) -> str:
+    """
+    [內部工具] 將 Windows 本地路徑轉換為 WSL 格式。
+    """
+    import re
+    # 1. 統一轉為正斜線，去除頭尾空白
+    p = local_path.strip().replace("\\", "/")
+    
+    # 2. 處理 WSL UNC 路徑 (例如 //wsl.localhost/Ubuntu/home/user/...)
+    if p.startswith("//wsl") or p.startswith("//WSL"):
+        parts = p.split("/")
+        # 取第 4 個元素之後的部分
+        if len(parts) >= 5:
+            return "/" + "/".join(parts[4:])
+    
+    # 3. 處理 Windows 磁碟機 (例如 D:/Project) -> /mnt/d/Project
+    match_drive = re.match(r"^([A-Za-z]):/(.*)", p)
+    if match_drive:
+        drive = match_drive.group(1).lower()
+        rest = match_drive.group(2)
+        return f"/mnt/{drive}/{rest}"
+        
+    return p.rstrip("/")
+
+def match_project_by_path(local_path: str) -> Optional[ProjectInfo]:
+    """
+    [UI 專用] 給定一個 Windows 路徑，檢查是否為已註冊專案。
+    如果是，回傳 ProjectInfo；如果不是，回傳 None。
+    """
+    # 1. 轉換路徑
+    target_wsl_path = _local_to_wsl_path(local_path)
+    
+    # 2. 獲取專案列表 (這會觸發一次 WSL 呼叫，確保資料最新)
+    # 如果怕太慢，也可以改用 _ensure_adapter()._projects (快取)，但這裡求穩先讀新的
+    all_projects = list_projects()
+    
+    # 3. 比對 (忽略結尾斜線差異)
+    target_clean = target_wsl_path.rstrip("/")
+    
+    for proj in all_projects:
+        # 專案路徑也可能帶有斜線，統一清理
+        proj_path_clean = proj.path.strip().replace("\\", "/").rstrip("/")
+        
+        if proj_path_clean == target_clean:
+            return proj
+            
+    return None
+
+# ============================
 # Demo（可直接 python -m src.backend.adapter）
 # ============================
 
