@@ -6,6 +6,8 @@ __pycache__/
 # OS 垃圾檔
 .DS_Store
 Thumbs.db
+sentry_config.ini
+*.lock
 
 # IDE 設定 (新增)
 .vscode/

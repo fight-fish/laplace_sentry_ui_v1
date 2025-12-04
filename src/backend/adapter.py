@@ -188,6 +188,7 @@ class BackendAdapter:
                 capture_output=True,
                 text=True,
                 encoding='utf-8',
+                creationflags=0x08000000,
                 check=True 
             )
             
@@ -563,6 +564,29 @@ class BackendAdapter:
         if isinstance(result, list):
             return [str(x) for x in result]
         return []
+    
+    # [Task 9.4] 審計功能：獲取靜默路徑
+    def get_muted_paths(self, uuid: str) -> List[str]:
+        """呼叫 WSL 獲取該專案目前被靜默的路徑列表。"""
+        if not uuid:
+            return []
+        
+        # 對應後端指令: get_muted_paths <uuid>
+        result = self._run_wsl_command("get_muted_paths", uuid)
+        
+        if isinstance(result, list):
+            return [str(x) for x in result]
+        return []
+
+    # [Task 9.4] 審計功能：執行固化
+    def solidify_ignore_patterns(self, uuid: str) -> None:
+        """呼叫 WSL 將目前的靜默路徑「固化」進 ignore_patterns。"""
+        if not uuid:
+            raise BackendError("固化失敗：UUID 為空。")
+            
+        # 對應後端指令: add_ignore_patterns <uuid>
+        # (注意：後端指令叫 add_ignore_patterns，但我們 UI 語意叫 solidify)
+        self._run_wsl_command("add_ignore_patterns", uuid)
 
 # ============================
 #  模組層：給 tray_app 使用的單例介面
@@ -752,6 +776,15 @@ def match_project_by_path(local_path: str) -> Optional[ProjectInfo]:
 def get_log_content(uuid: str) -> List[str]:
     adapter = _ensure_adapter()
     return adapter.get_log_content(uuid)
+
+# [Task 9.4] 對外公開接口
+def get_muted_paths(uuid: str) -> List[str]:
+    adapter = _ensure_adapter()
+    return adapter.get_muted_paths(uuid)
+
+def solidify_ignore_patterns(uuid: str) -> None:
+    adapter = _ensure_adapter()
+    return adapter.solidify_ignore_patterns(uuid)
 
 # ============================
 # Demo（可直接 python -m src.backend.adapter）

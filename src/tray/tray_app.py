@@ -1,70 +1,684 @@
-# --- 1. 導入系統與路徑管理工具 ---
+# ==========================================
+#   Sentry v2.0 Sandbox - Import Section
+# ==========================================
 
-# 導入（import）Python 系統（sys）工具，用於跟作業系統互動。
+# --- 1. 系統與基礎工具 ---
 import sys
-# 導入（import）路徑處理（pathlib）中的 Path 工具，方便處理檔案路徑。
+from typing import List, Dict, Any
+import math
 from pathlib import Path
-# 導入（import）類型提示（typing）中的 cast, List, Dict, Any。
-from typing import cast, List, Dict, Any 
 
-# --- 2. 導入 PySide6 介面相關模組 ---
+# --- 2. PySide6 核心與介面元件 ---
+from PySide6.QtCore import (
+    Qt, 
+    QPoint, 
+    QSize, 
+    QTimer,            # (心跳計時器)
+    QPropertyAnimation,# (動畫工具，預留給之後用)
+    QEasingCurve,
+    Signal,
+    QSettings,
+)
 
-# 導入 PySide6 的 Qt 核心（QtCore）中的 Qt，裡面包含各種常數設定。
-from PySide6.QtCore import Qt
-# 導入 PySide6 的視窗元件（QtWidgets），這是所有介面組件的來源。
+from PySide6.QtGui import (
+    QIcon, 
+    QAction, 
+    QPainter,          # (畫筆)
+    QPen, 
+    QColor, 
+    QBrush, 
+    QRadialGradient,   # (漸層)
+    QCursor,
+    QPalette,
+    QPainterPath        # (貝茲曲線工具
+)
+
 from PySide6.QtWidgets import (
-    # 這是應用程式（Application）的主入口。
     QApplication,
-    # 這是所有介面元件的基礎元件（Widget）。
     QWidget,
-    # 垂直佈局（Vertical Box Layout），把東西從上往下排。
     QVBoxLayout,
-    # 水平佈局（Horizontal Box Layout），把東西從左往右排。
     QHBoxLayout,
-    # 用來顯示文字的標籤（Label）。
     QLabel,
-    # 這是系統托盤圖標（System Tray Icon），就是右下角的小圖標。
-    QSystemTrayIcon,
-    # 這是右鍵點擊會彈出來的選單（Menu）。
-    QMenu,
-    # 這是用於獲取標準外觀樣式（Style）的工具。
-    QStyle,
-    # 用來顯示表格（Table）的元件。
-    QTableWidget,
-    # 表格中的單一個項目（Item）。
-    QTableWidgetItem,
-    # 可以拖拉調整大小的分隔器（Splitter）。
-    QSplitter,
-    # 邊框或分隔線（Frame）元件。
-    QFrame,
-    # 按鈕（Button）元件。
     QPushButton,
-    # 這是表格或列表的選取模式（Abstract Item View），例如只選一行。
-    QAbstractItemView,
-    # 單行文字輸入框（Line Edit）。
-    QLineEdit,
-    # 用來彈出檔案選取對話框（File Dialog）的工具。
-    QFileDialog,
-    # 用來彈出標準訊息框（Message Box），例如警告或確認。
+    QSystemTrayIcon,
+    QMenu,
+    QStyle,
+    QStackedWidget,
     QMessageBox,
-    QInputDialog,  # (用來跳出輸入框)
-    QListWidgetItem,  # (用來在列表中顯示單一項目)
-    QListWidget,  # (用來顯示列表的元件)
-    QDialogButtonBox,  # (用來顯示對話框按鈕列)
-    QDialog,  # (用來顯示對話框)
+    QInputDialog,
+    QSpacerItem,
+    QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
+    QSplitter,
+    QFrame,
+    QAbstractItemView,
+    QLineEdit,
+    QFileDialog,
+    QListWidgetItem,
+    QListWidget,
+    QDialogButtonBox,
+    QDialog,
     QCheckBox,
 )
 
-# 導入 PySide6 的圖形介面（QtGui）中的 QIcon（圖標）、QAction（動作）和 QColor（顏色）等。
-from PySide6.QtGui import QIcon, QAction, QColor, QPalette
+# --- 3. 專案內部模組 ---
+from src.backend import adapter
 
-# --- 3. 導入自定義模組 ---
+# ==========================================
+#   [New] 直覺引導氣泡 (Status Bubble)
+# ==========================================
+class StatusBubble(QWidget):
+    """
+    懸浮在眼睛下方的對話氣泡。
+    - 支援淡入淡出
+    - 支援自動消失
+    - 視覺風格：半透明黑底 + 白字
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # 設定為子視窗，但無邊框
+        self.setWindowFlags(Qt.WindowType.SubWindow | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        
+        # 預設隱藏
+        self.hide()
+        
+        # --- 介面佈局 ---
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        
+        self.label = QLabel("提示訊息")
+        self.label.setStyleSheet("""
+            color: #FFFFFF;
+            font-weight: bold;
+            font-size: 11px;
+        """)
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.label)
+        
+        # --- 自動消失計時器 ---
+        self.fade_timer = QTimer(self)
+        self.fade_timer.setSingleShot(True)
+        self.fade_timer.timeout.connect(self.hide_bubble)
 
-# 再次導入（import）路徑處理（pathlib）中的 Path 工具。（雖然上面有，但這裡保留）
-from pathlib import Path
+    def show_message(self, text: str, duration: int = 3000):
+        """顯示訊息，並在 duration (毫秒) 後自動消失"""
+        self.label.setText(text)
+        self.adjustSize() # 自動調整大小以適應文字
+        self.show()
+        
+        # 如果有設定時間，就啟動倒數
+        if duration > 0:
+            self.fade_timer.start(duration)
 
-# 從「src/backend」這個資料夾中，導入（import）我們的資料庫處理工具（adapter）。
-from src.backend import adapter 
+    def hide_bubble(self):
+        self.hide()
+
+    def paintEvent(self, event):
+        """繪製圓角半透明背景"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        rect = self.rect()
+        
+        # 半透明黑底
+        brush_color = QColor(0, 0, 0, 180)
+        painter.setBrush(QBrush(brush_color))
+        painter.setPen(Qt.PenStyle.NoPen)
+        
+        # 畫圓角矩形
+        painter.drawRoundedRect(rect, 10, 10)
+        
+        # (選配) 畫一個小三角形指向上面 (對話框的尾巴)
+        # 這裡先保持簡單圓角，以免計算太複雜
+
+# ==========================================
+#   View A: 哨兵之眼 (Sentry Eye) - 正式實作
+# ==========================================
+class SentryEyeWidget(QWidget):
+    
+    # 這是我們的靜態常數
+    DEFAULT_OUTPUT_FILENAMES = ["README.md", "README.MD", "readme.md", "INDEX.md", "index.md"]
+
+    # 這是我們的靜態方法 (可以直接呼叫 SentryEyeWidget._find_default_output_file)
+    @staticmethod
+    def _find_default_output_file(folder_path: Path) -> str | None:
+        """[核心] 檢查資料夾內是否存在預設寫入檔，並返回第一個存在的路徑。"""
+        # 我們用「for...in...」這個結構，來一個一個地處理「預設寫入檔名稱（filename）」。
+        for filename in SentryEyeWidget.DEFAULT_OUTPUT_FILENAMES:
+            target_path = folder_path / filename
+            # 我們用「if」來判斷，如果（if）這個路徑是一個檔案（is_file）...
+            if target_path.is_file():
+                # 就回傳（return）這個路徑的字串。
+                return str(target_path)
+        # 如果迴圈結束都沒找到，就回傳（return）空值（None）。
+        return None
+
+    def __init__(self, switch_callback):
+        super().__init__()
+        # [新增] 告訴視窗：我願意接收拖曳進來的東西
+        self.setAcceptDrops(True)
+        # 設定背景透明
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        
+        # 用於視窗拖曳的變數
+        self.old_pos = None
+
+        # [新增] 狀態記憶體：用來暫存「還沒餵飽」的專案資料夾
+        self.pending_folder = None
+
+        # --- 動畫核心 ---
+        # 我們建立（create）一個計時器，讓眼睛動起來。
+        self.timer = QTimer(self)
+        # 每 50 毫秒（ms）觸發一次更新，讓畫面重畫。
+        self.timer.timeout.connect(self.update)
+        # 啟動（start）計時器。
+        self.timer.start(50)
+        # 這是一個變數，用來記錄動畫目前的「呼吸進度」。
+        self.phase = 0
+        # [新增] 吞噬動畫計數器 (0 = 無動畫, >0 = 播放中)
+        self.eating_frame = 0
+
+        # [新增] 初始化引導氣泡
+        # 我們把 self (眼睛) 傳進去當作 parent，這樣氣泡就會成為眼睛的子視窗
+        self.bubble = StatusBubble(self)
+        # 設定氣泡初始位置 (相對於眼睛左上角)
+        # 這裡先暫定 (10, 140)，也就是眼睛下方一點點
+        self.bubble.move(10, 140)
+
+        # [新增] 瞳孔運動神經
+        self.pupil_offset = QPoint(0, 0)       # 目前位置
+        self.target_offset = QPoint(0, 0)      # 目標位置
+
+        # [新增] 掃視計時器 (Saccade Timer)
+        self.saccade_timer = QTimer(self)
+        self.saccade_timer.timeout.connect(self._trigger_saccade)
+        self.saccade_timer.start(3000) # 初始每 3 秒動一次
+
+        # [新增] 眨眼計時器 (Blink Timer)
+        # 我們建立（create）一個計時器，專門控制眨眼。
+        self.blink_timer = QTimer(self)
+        # 時間到時，連結（connect）到觸發眨眼的方法。
+        self.blink_timer.timeout.connect(self._trigger_blink)
+        # 啟動（start）計時器，初始設定 4000 毫秒（4秒）。
+        self.blink_timer.start(4000)
+
+        # [新增] 眨眼狀態變數
+        # 這是一個旗標，標記目前是否正在（is）眨眼。
+        self.is_blinking = False
+        # 這是一個浮點數，記錄眼皮閉合的進度（0.0 全開 ~ 1.0 全閉）。
+        self.blink_progress = 0.0
+        self.blink_repeats = 0  # [新增] 剩餘眨眼次數
+
+        # --- 佈局設計 (維持不變) ---
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.addStretch(1)
+        
+        bottom_layout = QHBoxLayout()
+        bottom_layout.addStretch(1) 
+        
+        self.btn_dashboard = QPushButton("哨兵管理")
+        self.btn_dashboard.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_dashboard.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(0, 0, 0, 150);
+                color: white;
+                border: 1px solid rgba(255, 255, 255, 100);
+                border-radius: 5px;
+                padding: 5px 10px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(40, 40, 40, 200);
+                border-color: white;
+            }
+        """)
+        self.btn_dashboard.clicked.connect(switch_callback)
+        
+        bottom_layout.addWidget(self.btn_dashboard)
+        layout.addLayout(bottom_layout)
+
+        # [Task 9.4] 初始化偏好開關，預設為開啟（True）。
+        self.enable_guidance = True
+        self.enable_smart_match = True
+
+    def _trigger_saccade(self): 
+        """隨機產生眼球移動目標""" 
+        import random 
+        # 隨機決定下一次動的時間 (2~5秒) 
+        self.saccade_timer.setInterval(random.randint(2000, 5000))
+        # 隨機決定看的方向 (範圍限制在 +/- 15px 以內，避免脫窗)
+        # 這裡使用整數簡化計算
+        rx = random.randint(-15, 15)
+        ry = random.randint(-10, 10) # 上下移動範圍小一點，比較自然
+        self.target_offset = QPoint(rx, ry)
+
+    def _trigger_blink(self):
+        """觸發眨眼動畫 (設定雙連眨)"""
+        import random
+        if self.eating_frame > 0:
+            return
+
+        # --- [教學] 修改這裡的數字來控制頻率 ---
+        # 4000 = 4秒, 8000 = 8秒
+        # 這表示：每隔 4~8 秒之間，會觸發一次眨眼
+        next_interval = random.randint(4000, 8000) 
+        self.blink_timer.setInterval(next_interval)
+        
+        # 開始眨眼
+        self.is_blinking = True
+        self.blink_progress = 0.0
+        
+        # [設定] 設定為 1，表示這次眨完後，還要「再眨 1 次」(共 2 次)
+        # 如果您想要單次眨眼，改成 0 即可
+        self.blink_repeats = 1
+
+    def set_preferences(self, guidance: bool, smart_match: bool):
+        """[Task 9.4] 這是接收外部設定的「接口」，用來更新開關狀態。"""
+        self.enable_guidance = guidance
+        self.enable_smart_match = smart_match
+
+        # 如果（if）關閉了引導，且氣泡還在顯示，就把它藏起來（hide）。
+        if not guidance and hasattr(self, 'bubble'):
+            self.bubble.hide()
+
+    def resizeEvent(self, event):
+        """當視窗大小改變時，調整氣泡位置"""
+        super().resizeEvent(event)
+        # 讓氣泡水平置中
+        if hasattr(self, 'bubble'):
+            bx = (self.width() - self.bubble.width()) // 2
+            # 放在高度的 85% 處 (眼睛下方)
+            by = int(self.height() * 0.85) 
+            self.bubble.move(bx, by)
+        
+    def paintEvent(self, event):
+        """繪製精細版哨兵之眼 (v2.1: 中空機械眼 + 雷射邊框)"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # --- 0. 動畫核心計算 ---
+        self.phase += 0.1
+        breath_factor = 0.85 + 0.15 * abs(math.sin(self.phase))
+        # --- [新增] 瞳孔物理運動 (Ease-out 插值) ---
+        # 讓目前位置追趕目標位置，係數 0.1 代表速度
+        dx = self.target_offset.x() - self.pupil_offset.x()
+        dy = self.target_offset.y() - self.pupil_offset.y()
+
+        # 更新目前位置 (轉成整數以利繪圖)
+        new_x = self.pupil_offset.x() + int(dx * 0.1)
+        new_y = self.pupil_offset.y() + int(dy * 0.1)
+        self.pupil_offset = QPoint(new_x, new_y)
+        # 狀態判斷
+        is_eating = self.eating_frame > 0
+        if is_eating:
+            self.eating_frame -= 1
+            breath_factor = 1.2 
+            
+        # 判斷是否處於「飢渴狀態 (Hunting Mode)」
+        is_hungry = self.pending_folder is not None
+
+        rect = self.rect()
+        center = rect.center()
+        w = rect.width()
+        h = rect.height()
+        
+        # [動態適配] 使用相對比例，而非固定數值
+        eye_width = w * 0.8
+        eye_height = h * 0.5
+
+        # --- 定義色票 (Color Palette) ---
+        if is_eating:
+            # 吞噬中：綠色
+            main_color = QColor(50, 255, 50)
+            glow_color = QColor(0, 200, 0)
+        elif is_hungry:
+            # 飢渴中：橘紅色
+            main_color = QColor(255, 140, 0) 
+            glow_color = QColor(255, 69, 0)  
+        else:
+            # 正常：青色
+            main_color = QColor(0, 255, 255)
+            glow_color = QColor(0, 150, 255)
+
+        # --- 1. 背景光暈 ---
+        halo_radius = (eye_width / 2) * breath_factor * 1.2
+        halo = QRadialGradient(center, halo_radius)
+        
+        # 設定透明度
+        c1 = QColor(main_color)
+        c1.setAlpha(100 if not is_eating else 180)
+        c2 = QColor(glow_color)
+        c2.setAlpha(40 if not is_eating else 50)
+        
+        halo.setColorAt(0.0, c1)
+        halo.setColorAt(0.5, c2)
+        halo.setColorAt(1.0, QColor(0, 0, 0, 0))
+        
+        painter.setBrush(QBrush(halo))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(center, halo_radius, halo_radius)
+        
+        # --- 2. 眼眶 (上下眼瞼) ---
+        path = QPainterPath()
+        left_pt = QPoint(int(center.x() - eye_width/2), int(center.y()))
+        right_pt = QPoint(int(center.x() + eye_width/2), int(center.y()))
+        top_ctrl = QPoint(int(center.x()), int(center.y() - eye_height))
+        bottom_ctrl = QPoint(int(center.x()), int(center.y() + eye_height))
+        
+        path.moveTo(left_pt)
+        path.quadTo(top_ctrl, right_pt)
+        path.quadTo(bottom_ctrl, left_pt)
+        
+        # 外框顏色
+        pen_color = QColor(main_color)
+        pen_color.setAlpha(255)
+        pen_glow = QPen(pen_color)
+        # [視覺微調] 使用浮點數寬度，讓線條更細緻 (1.5px / 2.5px)
+        pen_glow.setWidthF(2.5 if is_eating else 1.5)
+        painter.setPen(pen_glow)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(path)
+
+# --- 3. 瞳孔 (v2.1: 中空雷射環 + 物理運動) ---
+        # [關鍵 1] 計算瞳孔的新中心點 (原本的中心 + 偏移量)
+        pupil_center = center + self.pupil_offset
+
+        # [關鍵 2] 根據狀態決定瞳孔大小 (維持 Task 9.2.1 的邏輯)
+        if is_eating:
+            pupil_scale = 0.2
+        elif is_hungry:
+            pupil_scale = 0.55 
+        else:
+            pupil_scale = 0.45 
+
+        pupil_r = eye_height * pupil_scale
+        
+        # [關鍵 3] 繪製 (注意：這裡全部改成用 pupil_center！)
+        
+        # A. 虹膜 (透明 + 邊框)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        ring_pen = QPen(main_color)
+        ring_pen.setWidthF(1.5) 
+        painter.setPen(ring_pen)
+        # 使用新的中心點繪製
+        painter.drawEllipse(pupil_center, pupil_r, pupil_r)
+        
+        # B. 內圈瞳孔 (黑色實心)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(0, 0, 0, 220)))
+        # 使用新的中心點繪製
+        painter.drawEllipse(pupil_center, pupil_r * 0.6, pupil_r * 0.6)
+
+        # --- 4. 眨眼動畫 (v2.2: 單向 + 雙連眨) ---
+        if self.is_blinking:
+            # 增加進度 (0.35 = 眨得更快一點，因為要眨兩下)
+            self.blink_progress += 0.35
+
+            # 計算閉合程度
+            if self.blink_progress <= 1.0:
+                lid_factor = self.blink_progress
+            else:
+                lid_factor = 2.0 - self.blink_progress
+
+            # 動畫結束檢查
+            if self.blink_progress >= 2.0:
+                # [關鍵] 檢查是否需要連眨
+                if self.blink_repeats > 0:
+                    self.blink_repeats -= 1
+                    self.blink_progress = 0.0 # 重置進度，馬上再眨一次
+                    lid_factor = 0.0
+                else:
+                    # 真的結束了
+                    self.is_blinking = False
+                    self.blink_progress = 0.0
+                    lid_factor = 0.0
+
+            # 設定剪裁
+            painter.save()
+            painter.setClipPath(path)
+
+            # 計算眼皮高度
+            # 因為只從上面蓋下來，高度需要是原本的 2 倍才能蓋滿全眼
+            lid_h = int(eye_height * 2 * lid_factor)
+            
+            lid_color = QColor(main_color)
+            lid_color.setAlpha(200) 
+            painter.setBrush(QBrush(lid_color))
+            painter.setPen(Qt.PenStyle.NoPen)
+
+            # 只畫上眼瞼 (從上往下蓋)
+            # 起點 Y 是眼眶最高點 (center.y - eye_height)
+            painter.drawRect(
+                int(center.x() - eye_width/2), 
+                int(center.y() - eye_height), 
+                int(eye_width), 
+                lid_h
+            )
+            
+            painter.restore()
+
+    # --- 實作無邊框視窗的拖曳功能 ---
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.old_pos = event.globalPosition().toPoint()
+
+    def mouseMoveEvent(self, event):
+        if self.old_pos:
+            delta = event.globalPosition().toPoint() - self.old_pos
+            # 注意：這裡是移動父容器 (SentryTrayAppV2.container)
+            # 因為 SentryEyeWidget 只是 container 裡的一頁
+            self.window().move(self.window().pos() + delta)
+            self.old_pos = event.globalPosition().toPoint()
+
+    def mouseReleaseEvent(self, event):
+        self.old_pos = None
+
+        # --- 拖曳事件處理 ---
+    def dragEnterEvent(self, event):
+        """當拖曳物進入視窗時觸發"""
+        # 我們檢查（check）拖曳物是否包含檔案路徑（Urls）。
+        if event.mimeData().hasUrls():
+            # 如果有，我們就接受（accept）這個動作，游標會變。
+            event.accept()
+        else:
+            # 否則，我們忽略（ignore），游標顯示禁止符號。
+            event.ignore()
+
+    def dropEvent(self, event):
+        """處理放下事件：氣泡回饋版 (Status Bubble Integration)"""
+        urls = event.mimeData().urls()
+        if not urls:
+            return
+            
+        path_str = urls[0].toLocalFile()
+        path_obj = Path(path_str)
+        
+        # --- [Priority 0] 解除飢餓狀態 ---
+        if self.pending_folder:
+            if path_obj.is_file():
+                folder = self.pending_folder
+                target_file = path_str
+                self.pending_folder = None
+                self._execute_add_project(folder, target_file)
+                event.accept()
+            else:
+                # [氣泡] 錯誤提示
+                self.bubble.show_message("❌ 錯誤：請餵我「檔案」作為寫入目標！", 3000)
+                event.ignore()
+            return
+
+        # --- [Layer 1] 舊雨判定 ---
+        if path_obj.is_dir():
+            match_proj = adapter.match_project_by_path(path_str)
+
+            if match_proj:
+                if match_proj.status == "monitoring":
+                    adapter.trigger_manual_update(match_proj.uuid)
+                    # [氣泡] 單次更新回饋
+                    self.bubble.show_message(f"✨ 專案「{match_proj.name}」\n已觸發單次更新！", 3000)
+                else:
+                    adapter.toggle_project_status(match_proj.uuid)
+                    # [氣泡] 啟動回饋
+                    self.bubble.show_message(f"👁️ 歡迎回來，{match_proj.name}。\n哨兵已啟動！", 4000)
+                
+                event.accept()
+                return
+
+        # --- [Layer 2 & 3] 新專案處理 ---
+        if path_obj.is_dir():
+            # Layer 2: 智慧預設
+            default_file = self._find_default_output_file(path_obj)
+            # 我們用「if」同時檢查：是否開啟了智慧配對（enable_smart_match）以及是否找到了預設檔。
+            if self.enable_smart_match and default_file:
+                # [氣泡] 預設檔命中提示 (在彈出輸入框前先給個提示)
+                self.bubble.show_message("✨ 已鎖定預設檔，準備啟動...", 2000)
+                # 這裡稍微延遲一下再彈出輸入框，讓氣泡能被看到
+                QTimer.singleShot(500, lambda: self._execute_add_project(str(path_obj), default_file))
+            else:
+                # Layer 3: 飢餓模式
+                self.pending_folder = str(path_obj)
+                self.update() 
+                # 用「if」判斷：只有在開啟引導（enable_guidance）時，才顯示氣泡8秒。
+                if self.enable_guidance:
+                    self.bubble.show_message("🟠 收到資料夾！\n請再拖入「寫入檔」給我...", 8000)
+            event.accept()
+            
+        elif path_obj.is_file():
+            menu = QMenu(self)
+            menu.setStyleSheet("QMenu { background-color: rgba(20, 20, 30, 240); color: white; border: 1px solid #00FFFF; }")
+            action = QAction(f"⚡ 單次更新: {path_obj.name}", menu)
+            action.triggered.connect(lambda: self.bubble.show_message("🚧 功能開發中...", 2000))
+            menu.addAction(action)
+            if not menu.isEmpty():
+                menu.exec(QCursor.pos())
+                event.accept()
+
+
+    def _execute_add_project(self, folder, output_file):
+        """[內部工具] 執行最終的新增動作"""
+        path_obj = Path(folder)
+        default_name = path_obj.name
+        
+        # 詢問別名
+        name, ok = QInputDialog.getText(self, "新哨兵設定", "請輸入專案別名：", text=default_name)
+        if not ok or not name:
+            # 如果取消，記得把暫存清空，不然會卡在飢餓狀態
+            self.pending_folder = None
+            return
+
+        try:
+            adapter.add_project(name=name, path=folder, output_file=output_file)
+            # [新增] 觸發吞噬動畫 (持續約 20 幀)
+            self.eating_frame = 20
+            # [修正] 延遲 600 毫秒再彈出視窗，讓使用者先欣賞「吞噬動畫」
+            actual_filename = Path(output_file).name
+            QTimer.singleShot(600, lambda: QMessageBox.information(self, "新增成功", f"已加入哨兵：{name}\n目標：{Path(output_file).name}"))
+        except Exception as e:
+            QMessageBox.critical(self, "新增失敗", str(e))
+            self.pending_folder = None # 失敗也要重置
+
+    def _real_add_project(self, path_obj):
+        """[真實邏輯] 呼叫 Adapter 新增專案 (含智慧引導)"""
+        folder_path = str(path_obj)
+        default_name = path_obj.name
+        
+        # 1. 詢問別名
+        name, ok = QInputDialog.getText(self, "新哨兵設定", "請輸入專案別名：", text=default_name)
+        if not ok or not name:
+            return
+
+        # 2. 尋找第一個存在的寫入檔 (大小寫不敏感檢查)
+        # HACK: 直接複製靜態常數到區域變數，避免 Pylance 在 f-string 內報錯
+        DEFAULT_NAMES = SentryEyeWidget.DEFAULT_OUTPUT_FILENAMES 
+        
+        # 我們現在直接呼叫 SentryEyeWidget 類別內的靜態方法
+        output_file = SentryEyeWidget._find_default_output_file(path_obj)
+
+        # 舊有邏輯：如果一個預設寫入檔都找不到，就報錯。
+        if output_file is None:
+            # 提示（show warning）：未找到預設寫入檔，無法自動註冊。
+            QMessageBox.warning(self, "Sentry 警告",
+                                f"此資料夾未找到預設寫入檔：{DEFAULT_NAMES} 中的任何一個。\n" # 使用新的區域變數
+                                "請先手動創建一個 Markdown 檔案，或使用控制台手動新增專案。",
+                                QMessageBox.StandardButton.Ok)
+            # 用「return」結束新增流程。
+            return
+
+        # 3. 呼叫後端 (使用找到的 output_file)
+        try:
+            # 嘗試快速新增
+            adapter.add_project(name=name, path=folder_path, output_file=output_file)
+            # R2 修正: 確保成功訊息顯示的是實際找到的檔名，而不是硬編碼的 README.md。
+            actual_filename = Path(output_file).name 
+            QMessageBox.information(self, "新增成功", f"已加入哨兵：{name}\n目標：{actual_filename}")
+            
+        except Exception as e:
+            # --- 失敗後的智慧引導 ---
+            error_msg = str(e)
+            
+            # 【關鍵優化】如果找不到預設檔案（R2 暫時解法）
+            # 或者是後端報錯，我們直接引導使用者去控制台。
+            if "不存在" in error_msg or "No such file" in error_msg or "已被佔用" in error_msg:
+                QMessageBox.warning(
+                    self, 
+                    "新增失敗 - 需要手動修正", 
+                    f"快速新增失敗：找不到預設寫入檔，或專案已被佔用。\n\n已為您切換至【控制台】，請在下方手動輸入路徑。",
+                    QMessageBox.StandardButton.Ok
+                )
+                
+                # 執行切換到 View B (控制台) 的動作
+                self.btn_dashboard.click()
+                
+                # 這裡未來可以新增邏輯：自動填入 View B 的輸入框
+                # 但目前 View B 的輸入框邏輯還沒完全移植，先只做到切換。
+                
+            else:
+                # 其他錯誤（例如後端崩潰、Adapter 通訊失敗）直接報錯
+                QMessageBox.critical(self, "新增失敗", error_msg)
+
+    def contextMenuEvent(self, event):
+        """[Task 9.4-UX] 右鍵選單：提供飢餓狀態的逃生門"""
+        # 只有在「飢餓模式 (有暫存資料夾)」時，才顯示這個選單
+        if self.pending_folder:
+            menu = QMenu(self)
+            # 設定樣式：深色背景 + 紅色邊框 (強調取消)
+            menu.setStyleSheet("""
+                QMenu { 
+                    background-color: rgba(20, 20, 30, 240); 
+                    color: white; 
+                    border: 1px solid #FF5555; 
+                    border-radius: 5px;
+                    padding: 5px;
+                }
+                QMenu::item:selected {
+                    background-color: #FF5555;
+                }
+            """)
+            
+            # 顯示當前暫存的資料夾名稱，讓使用者確認
+            folder_name = Path(self.pending_folder).name
+            action_cancel = QAction(f"❌ 取消暫存：{folder_name}", menu)
+            
+            # 定義取消動作
+            def do_cancel():
+                self.pending_folder = None # 清空暫存
+                self.eating_frame = 0      # 確保動畫重置
+                self.update()              # 重畫 (橘眼 -> 青眼)
+                self.bubble.show_message("已取消操作，回到待機狀態。", 2000)
+                
+            action_cancel.triggered.connect(do_cancel)
+            menu.addAction(action_cancel)
+            
+            # 在滑鼠位置彈出
+            menu.exec(event.globalPos())
+
+    def mouseDoubleClickEvent(self, event):
+        """雙擊隱藏視窗"""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.window().hide()
 
 class IgnoreSettingsDialog(QDialog):
     """
@@ -155,6 +769,103 @@ class IgnoreSettingsDialog(QDialog):
         self.list_widget.scrollToBottom()
         self.new_pattern_edit.clear()
 
+class TargetListWidget(QListWidget):
+    """
+    專門用於處理寫入檔列表的 QListWidget 子類別。
+    它接收專案 UUID 和重載回調函式，直接執行拖曳新增邏輯。
+    """
+    def __init__(self, uuid, reload_callback, log_callback, parent=None):
+        super().__init__(parent)
+        # 儲存參數
+        self.uuid = uuid 
+        self.reload_data = reload_callback 
+        self.log_callback = log_callback
+        self.VALID_EXTENSIONS = {'.md', '.markdown', '.txt', '.log'}
+
+        # --- 拖曳核心設定 ---
+        # 告訴列表：接受拖曳進來的東西
+        self.setAcceptDrops(True)
+        # 設定模式：只接受「放下 (DropOnly)」，不允許把項目拖出去
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
+        # 設定選取模式：允許「多選 (ExtendedSelection)」，方便一次刪除多個
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+
+        # --- 視覺提示 ---
+        # 設定樣式表：給它一個虛線框和提示文字背景，讓它看起來像個「接收區」
+        self.setStyleSheet("""
+            QListWidget {
+                border: 2px dashed #AAAAAA;
+                border-radius: 5px;
+                background-color: #F9F9F9;
+                padding: 5px;
+            }
+            QListWidget::item {
+                background-color: white;
+                border-bottom: 1px solid #EEEEEE;
+                padding: 4px;
+            }
+            QListWidget::item:selected {
+                background-color: #D2E1F5;
+                color: black;
+            }
+        """)
+        # 設定提示文字 (當列表為空時顯示，雖然 QListWidget 預設不支援直接顯示文字，但邊框已經足夠提示)
+        self.setToolTip("💡 提示：您可以直接將多個 Markdown 檔案「拖曳」到此列表中加入")
+
+    def dragEnterEvent(self, event):
+        """當拖曳物進入列表時觸發"""
+        if event.mimeData().hasUrls():
+            event.accept()
+        else:
+            event.ignore()
+
+    # [新增] 處理拖曳移動事件 (這是關鍵！很多時候是這裡拒絕了拖曳)
+    def dragMoveEvent(self, event):
+        """當拖曳物在列表中移動時觸發"""
+        if event.mimeData().hasUrls():
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        """處理放下事件：批次呼叫後端追加目標"""
+        from pathlib import Path
+        from PySide6.QtWidgets import QMessageBox
+
+        urls = event.mimeData().urls()
+        if not urls:
+            return
+            
+        added_count = 0
+        error_count = 0
+        
+        for url in urls:
+            path_str = url.toLocalFile()
+            path_obj = Path(path_str)
+            
+            # 只處理存在的檔案，且在白名單內
+            if path_obj.is_file() and path_obj.suffix.lower() in self.VALID_EXTENSIONS:
+                try:
+                    # 呼叫後端追加 (複用既有的 adapter 接口)
+                    adapter.add_target(self.uuid, path_str)
+                    added_count += 1
+                    self.log_callback(f"+ 拖曳新增: {Path(path_str).name}")
+                except Exception:
+                    # 如果後端拒絕 (例如：重複路徑、路徑無效)，我們計數但繼續處理下一個
+                    error_count += 1
+            
+        # 根據結果更新介面與回饋
+        if added_count > 0 or error_count > 0:
+            self.reload_data() # 刷新列表
+            msg = f"✓ 成功追加 {added_count} 個目標。"
+            if error_count > 0:
+                msg += f" (忽略 {error_count} 個重複/無效路徑)"
+            QMessageBox.information(self, "批次追加結果", msg)
+            event.accept()
+        else:
+            QMessageBox.warning(self, "警告", "拖曳無效：沒有可識別的 Markdown 檔案。")
+            event.ignore()
 
 # 我們用「class」來定義（define）編輯專案設定視窗類別。
 class EditProjectDialog(QDialog):
@@ -164,10 +875,12 @@ class EditProjectDialog(QDialog):
     - 寫入檔 (Targets)：【即時操作】按下新增/刪除按鈕立即生效。
     """
     def __init__(self, parent=None, project_data: adapter.ProjectInfo | None = None):
+
         super().__init__(parent)
         self.project_data = project_data # 保留參照以便重新讀取
         self.uuid = project_data.uuid if project_data else ""
-        
+        # [新增] 記錄即時操作的次數 (如增刪寫入檔)
+        self.change_log = []
         self.setWindowTitle(f"修改專案設定 - {project_data.name if project_data else ''}")
         self.resize(600, 500) # 加高一點以容納列表
         
@@ -205,7 +918,16 @@ class EditProjectDialog(QDialog):
         layout_targets.addWidget(QLabel("<b>寫入檔管理 (即時生效)</b>"))
         
         # 目標列表
-        self.target_list = QListWidget()
+        # 我們替換為專門處理拖曳的 TargetListWidget
+        # 傳入 uuid 和 刷新回調函式 (_reload_data)
+        # [新增] 傳入 log_callback 以便記錄拖曳新增的日誌
+        self.target_list = TargetListWidget(
+            uuid=self.uuid, 
+            reload_callback=self._reload_data,
+            log_callback=self._append_log
+        )
+        # [新增] 啟用寫入檔列表的拖曳功能
+        self.target_list.setAcceptDrops(True)
         self._refresh_target_list(data.output_file if data else [])
         layout_targets.addWidget(self.target_list)
         
@@ -239,11 +961,15 @@ class EditProjectDialog(QDialog):
 
     def _reload_data(self):
         """從後端重新讀取此專案的最新資料 (用於更新列表)"""
+
         all_projects = adapter.list_projects()
         current = next((p for p in all_projects if p.uuid == self.uuid), None)
         if current:
             self.project_data = current
             self._refresh_target_list(current.output_file)
+
+    def _append_log(self, msg: str):
+        self.change_log.append(msg)
 
     def _on_add_target(self):
         """處理追加寫入檔 (即時)"""
@@ -260,6 +986,7 @@ class EditProjectDialog(QDialog):
         try:
             # 呼叫後端追加
             adapter.add_target(self.uuid, file_path)
+            self._append_log(f"+ 新增: {Path(file_path).name}") 
             # 刷新介面
             self._reload_data()
             QMessageBox.information(self, "成功", "已成功追加寫入目標。")
@@ -267,75 +994,259 @@ class EditProjectDialog(QDialog):
             QMessageBox.critical(self, "追加失敗", str(e))
 
     def _on_remove_target(self):
-        """處理移除寫入檔 (即時)"""
-        from PySide6.QtWidgets import QMessageBox
-        
+        """處理移除寫入檔 (支援批次移除)"""
         selected_items = self.target_list.selectedItems()
         if not selected_items:
             QMessageBox.warning(self, "提示", "請先選擇要移除的路徑。")
             return
             
-        target_path = selected_items[0].text()
+        count = len(selected_items)
         
-        # 二次確認
+        # 1. 構建確認訊息
+        if count == 1:
+            target_path = selected_items[0].text()
+            msg = f"確定要移除此寫入目標嗎？\n{target_path}"
+        else:
+            msg = f"確定要移除這 {count} 個寫入目標嗎？"
+
+        # 2. 二次確認
         reply = QMessageBox.question(
-            self, "確認移除", f"確定要移除此寫入目標嗎？\n{target_path}",
+            self, "確認移除", msg,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         
         if reply == QMessageBox.StandardButton.Yes:
-            try:
-                adapter.remove_target(self.uuid, target_path)
-                self._reload_data()
-            except Exception as e:
-                QMessageBox.critical(self, "移除失敗", str(e))
+            # 3. 執行批次移除
+            error_count = 0
+            for item in selected_items:
+                path_to_remove = item.text()
+                try:
+                    adapter.remove_target(self.uuid, path_to_remove)
+                    self._append_log(f"- 移除: {Path(path_to_remove).name}")
+                except Exception:
+                    error_count += 1
+            
+            # 4. 刷新介面
+            self._reload_data()
+            
+            if error_count > 0:
+                QMessageBox.warning(self, "部分失敗", f"有 {error_count} 個檔案移除失敗。")
 
-    def get_changes(self) -> Dict[str, str]:
-        """回傳基本資料的變更 (Name/Path)"""
+    def get_changes(self) -> Dict[str, Any]:
+        """回傳基本資料的變更 (Name/Path) 以及寫入檔變更"""
         changes = {}
         
-        # 檢查名稱變更
+        # 1. 檢查名稱變更
         new_name = self.name_edit.text().strip()
         if self.project_data and new_name != self.project_data.name:
             if new_name:
                 changes['name'] = new_name
 
-        # 檢查路徑變更
+        # 2. 檢查路徑變更
         new_path = self.path_edit.text().strip()
-        # 注意：這裡簡單比對字串，嚴謹一點應該用 normalize_path，但暫時這樣足夠
         if self.project_data and new_path != self.project_data.path:
             if new_path:
                 changes['path'] = new_path
+        
+        # 3. [新增] 檢查寫入檔變更
+        # 我們收集目前列表中的所有項目
+        current_targets = []
+        for i in range(self.target_list.count()):
+            item = self.target_list.item(i)
+            current_targets.append(item.text())
             
-        return changes    
+        # 與原始資料比對 (轉換成 set 比較內容，忽略順序)
+        original_targets = self.project_data.output_file if self.project_data else []
+        
+        if set(current_targets) != set(original_targets):
+            # 如果有變動，將新列表放入 changes
+            changes['output_file'] = current_targets
+            
+        return changes  
 
-class SentryConsoleWindow(QWidget):
+# ==========================================
+#   [New] 日誌瀏覽器 (Log Viewer) - 翻譯版
+# ==========================================
+from PySide6.QtWidgets import QTextEdit
+
+# ==========================================
+#   [New] 日誌瀏覽器 (Log Viewer) - 時間軸版
+# ==========================================
+from PySide6.QtWidgets import QTextEdit
+
+class LogViewerWidget(QTextEdit):
     """
-    Sentry 控制台主視窗（接 backend_adapter 的雛型）
+    黑底白字的日誌顯示器 (內建翻譯機 + 時間軸)。
     """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        # 設定樣式：黑底、灰字、等寬字體
+        self.setStyleSheet("""
+            QTextEdit {
+                background-color: #1e1e1e;
+                color: #d4d4d4;
+                font-family: 'Microsoft JhengHei', 'Segoe UI Emoji', monospace;
+                font-size: 10pt;
+                border: 1px solid #333333;
+                border-radius: 4px;
+                padding: 5px;
+            }
+        """)
+        self.setPlaceholderText("請選擇左側專案以查看日誌...")
+
+    def set_logs(self, logs: list[str]):
+        """更新日誌內容 (自動翻譯 + 時間軸分組)"""
+        if not logs:
+            self.setPlaceholderText("此專案目前沒有日誌紀錄。")
+            self.clear()
+            return
+            
+        html_content = ""
+        last_date = None
+        import re
+
+        for line in logs:
+            # 1. 嘗試提取日期 (格式: [YYYY-MM-DD HH:MM:SS])
+            match = re.search(r"\[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})\]", line)
+            
+            if match:
+                date_str = match.group(1) # YYYY-MM-DD
+                time_str = match.group(2) # HH:MM:SS
+                
+                # 如果日期變了，插入一個日期標題
+                if date_str != last_date:
+                    html_content += f'<br><b><font color="#44AAFF">📅 {date_str}</font></b><br>'
+                    last_date = date_str
+                
+                # 呼叫翻譯機 (傳入 time_str 讓它只顯示時間)
+                html_content += self._humanize_log_line(line, time_str) + "<br>"
+            else:
+                # 沒時間戳記的行 (例如舊日誌或系統訊息)，直接翻譯
+                html_content += self._humanize_log_line(line, None) + "<br>"
+            
+        self.setHtml(html_content)
+        
+        # 自動捲動到底部
+        cursor = self.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.setTextCursor(cursor)
+
+    def _humanize_log_line(self, raw_line: str, time_str: str | None) -> str:
+        """[核心] 將原始日誌翻譯為彩色 HTML"""
+        import re
+        
+        # 定義時間前綴 (如果有傳入 time_str 就用它，否則不顯示)
+        t_prefix = f'<font color="#666666">{time_str}</font> ' if time_str else ""
+
+        # 1. 哨兵啟動/停止
+        if "哨兵啟動" in raw_line:
+            return f'{t_prefix}<font color="#00FFFF">👁️ <b>哨兵已就位，開始監控</b></font>'
+        if "Stopping sentry" in raw_line or "已成功發送終止信號" in raw_line:
+            return f'{t_prefix}<font color="#888888">💤 哨兵已暫停值勤</font>'
+
+        # 2. 檔案事件 (Created / Modified / Deleted)
+        # 注意：這裡的 regex 只需要抓 event 和 filename，時間已經在外面抓過了
+        match = re.search(r"\[偵測\] (created|modified|deleted): (.+)", raw_line)
+        if match:
+            event_type = match.group(1)
+            filename = match.group(2)
+            
+            # 去掉完整路徑，只留檔名
+            if "/" in filename or "\\" in filename:
+                from pathlib import Path
+                filename = Path(filename).name
+
+            if event_type == "created":
+                return f'{t_prefix}<font color="#00FF00">✨ 發現新檔案</font> : {filename}'
+            if event_type == "modified":
+                return f'{t_prefix}<font color="#FFFFFF">📝 偵測到變更</font> : {filename}'
+            if event_type == "deleted":
+                return f'{t_prefix}<font color="#FF5555">🗑️ 檔案已移除</font> : {filename}'
+
+        # 3. 過熱/靜默 (補回 Muting triggered)
+        if "智能靜默" in raw_line or "Muting triggered" in raw_line:
+            return f'{t_prefix}<font color="#FFFF00">🛡️ <b>觸發過熱保護 (進入靜默模式)</b></font>'
+        
+        # 4. 更新指令
+        if "成功觸發更新指令" in raw_line:
+            return f'{t_prefix}<font color="#44AAFF">✅ 正在執行目錄樹更新...</font>'
+
+        # 5. 黑名單/系統訊息 (淡化處理)
+        if "OUTPUT-FILE-BLACKLIST" in raw_line:
+            return f'<font color="#555555">🔒 安全機制：已自動排除輸出檔監控</font>'
+        if "[Step]" in raw_line:
+            return f'<font color="#555555">{raw_line}</font>'
+
+        # 預設：原樣顯示
+        return f'<font color="#AAAAAA">{raw_line}</font>'
+class DashboardWidget(QWidget):
+    """
+    Sentry 控制台主視窗
+    """
+    # [Task 9.4] 定義訊號：(是否啟用引導, 是否啟用智慧配對)
+    preferences_changed = Signal(bool, bool)
 
     # 我們用「def」來 定義（define）初始化方法，並接收統計回調（on_stats_change）。
-    def __init__(self, on_stats_change=None) -> None:
+    def __init__(self, on_stats_change=None, switch_callback=None) -> None:
         # 我們 呼叫（call）父類別的初始化。
         super().__init__()
         # 設定視窗的標題（Window Title）。
         self.setWindowTitle("Sentry 控制台 v1 (UX 測試樣板)")
         # 設定視窗的初始大小（resize），寬 900 像素，高 600 像素。
         self.resize(900, 600)
-        # 啟用（setAcceptDrops）主視窗的拖曳接收功能（True），這是 PySide6 處理拖曳事件的第一步。
-        self.setAcceptDrops(True)
-
+        # 我們將切換回調函式 儲存（store）起來 
+        self.switch_callback = switch_callback
+        # [新增] 用於視窗拖曳的變數
+        self.old_pos = None
         # 我們將回調函式 儲存（store）起來，供稍後使用。
         self.on_stats_change = on_stats_change
+
 
         # # TODO: 這裡的註解將使用通俗比喻來解釋資料結構。
         # 準備一個叫「current_projects」的空籃子（[]），
         # 專門用來存放從後端讀取的專案資訊（adapter.ProjectInfo）。
         self.current_projects: list[adapter.ProjectInfo] = []
+        self.new_input_fields: list[QLineEdit] = [] 
+        self.new_browse_buttons: list[QPushButton] = []
         # 呼叫各類函式來 建立介面 和 載入初始資料。        
         self._build_ui()
-        self._reload_projects_from_backend()
+                
+        # 載入資料
         self._load_ignore_settings()
+
+        # [New] 日誌自動刷新計時器
+        # 改為每 5 秒刷新一次，減輕 CPU 負擔
+        self.log_timer = QTimer(self)
+        self.log_timer.timeout.connect(self._refresh_current_log)
+        self.log_timer.start(5000)
+
+        # [Task 9.4-Memory] 初始化設定檔 (sentry_config.ini)
+        self.settings = QSettings("sentry_config.ini", QSettings.Format.IniFormat)
+        
+        # 讀取記憶 (預設為 True)
+        mem_guidance = self.settings.value("enable_guidance", True, type=bool)
+        mem_smart = self.settings.value("enable_smart_match", True, type=bool)
+        
+        # [Task 9.4-Memory] 初始化設定檔
+        self.settings = QSettings("sentry_config.ini", QSettings.Format.IniFormat)
+        
+        # 讀取記憶 (並強制轉型為 bool 以滿足 Pylance)
+        val_g = self.settings.value("enable_guidance", True, type=bool)
+        val_s = self.settings.value("enable_smart_match", True, type=bool)
+        
+        mem_guidance = bool(val_g)
+        mem_smart = bool(val_s)
+        
+        # 套用設定 (使用 blockSignals 暫時靜音，避免初始化時觸發寫入邏輯)
+        self.check_guidance.blockSignals(True)
+        self.check_smart.blockSignals(True)
+        
+        self.check_guidance.setChecked(mem_guidance)
+        self.check_smart.setChecked(mem_smart)
+        
+        self.check_guidance.blockSignals(False)
+        self.check_smart.blockSignals(False)
 
     # --- [新增] 獨立的統計通知函式 ---
     # 我們用「def」來 定義（define）重新計算並通知上層的函式。
@@ -367,6 +1278,23 @@ class SentryConsoleWindow(QWidget):
     def _build_ui(self) -> None:
         # 建立主佈局（main_layout），採用垂直佈局（QVBoxLayout），東西將從上往下排。
         main_layout = QVBoxLayout(self)
+
+        # --- 頂部導航區 (返回按鈕) ---
+        nav_layout = QHBoxLayout()
+        # 依照 UI_Strings_Reference_v2.md 定義的返回按鈕
+        btn_back = QPushButton("↩ 返回哨兵之眼") 
+        # 將按鈕連接到我們在 __init__ 中儲存的回調
+        btn_back.clicked.connect(self.switch_callback) 
+
+        # 標題
+        title_label = QLabel("Sentry 控制台")
+        title_label.setStyleSheet("font-weight: bold;")
+
+        nav_layout.addWidget(btn_back)
+        nav_layout.addWidget(title_label)
+        nav_layout.addStretch(1) # 推到底
+        main_layout.addLayout(nav_layout)
+        # --- 導航區塊結束 ---
 
         # 建立一個分割器（QSplitter），它可以讓使用者拖拉調整左右兩側的大小。
         # Qt.Orientation.Horizontal 表示它是水平分割的。
@@ -417,8 +1345,7 @@ class SentryConsoleWindow(QWidget):
         self.project_table.itemDoubleClicked.connect(
             self._on_project_double_clicked
         )
-
-
+            
 # 這裡，我們用「def」來定義（define）建立專案表格的函式。
     def _build_project_table(self) -> QTableWidget:
         # 建立一個表格元件（QTableWidget）。
@@ -436,8 +1363,8 @@ class SentryConsoleWindow(QWidget):
 
         # 設定選取行為（setSelectionBehavior）：點擊任何一個格子時，會選取（SelectRows）整行。
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        # 設定選取模式（setSelectionMode）：一次只能單獨選取（SingleSelection）一行。
-        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # 設定選取模式（ExtendedSelection）：支援一次可以選取批量檔案。
+        table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         # 設定編輯觸發（setEditTriggers）：關閉所有編輯功能（NoEditTriggers），讓表格只顯示資料。
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         # 隱藏垂直表頭（verticalHeader），也就是左側的行號。
@@ -473,7 +1400,6 @@ class SentryConsoleWindow(QWidget):
         return table
 
 
-# 這裡，我們用「def」來定義（define）建立右側詳情面板的函式。
     def _build_detail_panel(self) -> QFrame:
         # 建立一個框架（QFrame），作為右側面板的容器。
         frame = QFrame(self)
@@ -483,169 +1409,29 @@ class SentryConsoleWindow(QWidget):
         # 建立一個垂直佈局（QVBoxLayout），把元件從上往下排。
         layout = QVBoxLayout(frame)
 
-        # --- 上半部：專案詳情（保留你的原始文字） ---
-        # 建立一個標籤（QLabel），用於顯示專案詳情，並將其存入 self.detail_label 以便後續更新。
+        # --- 上半部：專案詳情 ---
         self.detail_label = QLabel(
             "專案詳情區：\n"
-            "選取左側某個專案後，會在這裡顯示其狀態與模式。\n"
-            "雙擊列可以切換【監控中／已停止】（目前為假後端 stub）。"
+            "選取左側某個專案後，會在這裡顯示其狀態與模式。"
         )
-        # 設定標籤的文字在超過寬度時可以自動換行（setWordWrap）。
         self.detail_label.setWordWrap(True)
-        # 把詳情標籤加入（addWidget）到垂直佈局中。
         layout.addWidget(self.detail_label)
 
-        # 加入一個 16 像素的空白間距（addSpacing），將詳情和新增區隔開。
+        # 加入分隔線
         layout.addSpacing(16)
 
-# --- 下半部：新增專案區 ---
-        # 建立一個水平佈局，用來放標題和模式開關
-        title_layout = QHBoxLayout()
-        
+        # --- [New] 下半部：日誌瀏覽器 ---
         # 標題
-        title_label = QLabel("新增專案")
-        # 設定標題字體加粗，讓它明顯一點
-        font = title_label.font()
-        font.setBold(True)
-        title_label.setFont(font)
-        
-        # 模式開關 (預設不勾選)
-        self.mode_checkbox = QCheckBox("自訂別名 (自由模式)")
-        # 綁定事件：當勾選狀態改變時，呼叫切換函式 (稍後實作)
-        self.mode_checkbox.toggled.connect(self._toggle_input_mode)
+        log_title = QLabel("<b>哨兵日誌 (Live Logs)</b>")
+        layout.addWidget(log_title)
 
-        # 組合
-        title_layout.addWidget(title_label)
-        title_layout.addStretch(1) # 中間塞彈簧，把開關推到右邊
-        title_layout.addWidget(self.mode_checkbox)
-
-        # 把這個水平佈局加入主垂直佈局
-        layout.addLayout(title_layout)
-
-        # 這是專門用來放「專案資料夾」和「寫入檔路徑」輸入框的垂直佈局
-        self.new_project_input_layout = QVBoxLayout()
-        # 把這個垂直佈局（new_project_input_layout）加入到主垂直佈局中。
-        layout.addLayout(self.new_project_input_layout)
-
-        # 呼叫（call）專門負責建立這些輸入框的函式
-        self._build_input_fields()
-
-
-        # 送出按鈕（目前 stub）
-        self.new_project_submit_button = QPushButton("確認新增")
-        # 預設禁用（setEnabled(False)）送出按鈕。
-        self.new_project_submit_button.setEnabled(False)
-        # 把按鈕加入（addWidget）到垂直佈局中。
-        layout.addWidget(self.new_project_submit_button)
-        # 綁定送出按鈕的點擊事件（clicked）到處理函式（Stub）。
-        self.new_project_submit_button.clicked.connect(self._on_submit_new_project)
-        # 空白推底：加入一個拉伸因子（addStretch(1)），把上面所有東西推到頂部。
-        layout.addStretch(1)
+        # 植入我們剛剛寫好的元件
+        self.log_viewer = LogViewerWidget()
+        layout.addWidget(self.log_viewer)
 
         # 回傳（return）設定好的框架元件。
         return frame
     
-    def _build_input_fields(self) -> None:
-        """
-        建立並設定新增專案的輸入欄位（支援 1 個專案資料夾 + 3 個寫入檔）。
-        這些元件將被加入到 self.new_project_input_layout 中。
-        """
-        # 建立一個叫 new_input_fields 的「空籃子」（List），用來存放所有輸入框物件。
-        self.new_input_fields: list[QLineEdit] = []
-        # 建立一個叫 new_browse_buttons 的「空籃子」（List），用來存放所有瀏覽按鈕物件。
-        self.new_browse_buttons: list[QPushButton] = []
-
-        # --- [Task I] 1. 建立別名輸入列 (預設隱藏) ---
-        # 我們用一個 Widget 把整列包起來，方便之後直接控制整列的顯示/隱藏
-        self.alias_container = QWidget()
-        alias_layout = QHBoxLayout(self.alias_container)
-        # 設定邊距為 0，讓它看起來像原生佈局的一部分
-        alias_layout.setContentsMargins(0, 0, 0, 0)
-        
-        alias_label = QLabel("專案別名：")
-        self.alias_edit = QLineEdit()
-        self.alias_edit.setPlaceholderText("可選：自訂顯示名稱 (若留空則使用資料夾名)")
-        
-        alias_layout.addWidget(alias_label)
-        alias_layout.addWidget(self.alias_edit)
-        
-        # 加入到主垂直佈局的最上方
-        self.new_project_input_layout.addWidget(self.alias_container)
-        
-        # 預設隱藏
-        self.alias_container.setVisible(False)
-        
-        # 專案資料夾列 (索引 0)
-        # 建立水平佈局（folder_row）
-        folder_row = QHBoxLayout()
-        # 建立標籤。
-        folder_label = QLabel("專案資料夾：")
-        # 建立輸入框（QLineEdit）。
-        self.new_project_folder_edit = QLineEdit()
-        self.new_project_folder_edit.setPlaceholderText("例如：/home/user/my_project")
-        # 建立瀏覽按鈕。
-        self.new_project_folder_button = QPushButton("瀏覽…")
-
-        # 加入元件到 folder_row
-        folder_row.addWidget(folder_label)
-        folder_row.addWidget(self.new_project_folder_edit, stretch=1)
-        folder_row.addWidget(self.new_project_folder_button)
-        
-        # 把這個水平佈局加入到 new_project_input_layout 垂直佈局中。
-        self.new_project_input_layout.addLayout(folder_row)
-        
-        # 把輸入框和按鈕儲存到籃子中（未來用索引 0 存取）
-        self.new_input_fields.append(self.new_project_folder_edit)
-        self.new_browse_buttons.append(self.new_project_folder_button)
-        
-        # 寫入檔路徑列 (索引 1, 2, 3 - 最多 3 個)
-        # 我們用 for...in... 這個結構，來循環（loop）3 次，建立 3 個寫入檔輸入欄位。
-        for i in range(1, 4):
-            # 建立水平佈局（output_row）
-            output_row = QHBoxLayout()
-            # 建立標籤（用 i 來區分是第幾個寫入檔）
-            output_label = QLabel(f"寫入檔 {i}：")
-            # 建立輸入框（QLineEdit）。
-            output_edit = QLineEdit()
-            output_edit.setPlaceholderText(f"目標 Markdown 文件 {i}")
-            # 建立瀏覽按鈕。
-            output_button = QPushButton("瀏覽…")
-            
-            # 將元件加入到 output_row
-            output_row.addWidget(output_label)
-            output_row.addWidget(output_edit, stretch=1)
-            output_row.addWidget(output_button)
-
-            # 把這個水平佈局加入到 new_project_input_layout 垂直佈局中。
-            self.new_project_input_layout.addLayout(output_row)
-
-            # 把輸入框和按鈕儲存到籃子中（未來用索引 i 存取）
-            self.new_input_fields.append(output_edit)
-            self.new_browse_buttons.append(output_button)
-
-
-        # --- 事件連結 (Signal/Slot) ---
-        # 綁定「瀏覽…」按鈕的點擊事件到處理函式。
-        # 因為我們現在有多個按鈕，我們使用 QWidget.findChildren 來找到它們。
-        for btn in self.new_browse_buttons:
-            # 這裡我們用 lambda 函式來傳遞按鈕本身，以便在 _on_select_new_path 中知道是哪個按鈕被點擊。
-            btn.clicked.connect(lambda checked, b=btn: self._on_select_new_path(b))
-
-        # 當使用者手動改文字時（textChanged），也綁定到檢查函式。
-        for edit in self.new_input_fields:
-            edit.textChanged.connect(self._update_new_project_submit_state)
-
-        # 建立一個拉伸因子，確保這塊輸入區的內容可以推開。
-        self.new_project_input_layout.addStretch(1)
-
-    def _toggle_input_mode(self, checked: bool) -> None:
-        """切換輸入模式：控制別名欄位的顯隱"""
-        # 控制容器的顯示/隱藏
-        self.alias_container.setVisible(checked)
-        
-        # 如果切換回一般模式 (unchecked)，我們主動清空別名欄位，避免殘留舊資料
-        if not checked:
-            self.alias_edit.clear()
 
 # 這裡，我們用「def」來定義（define）建立底部面板的函式。
     def _build_bottom_panel(self) -> QFrame:
@@ -676,26 +1462,49 @@ class SentryConsoleWindow(QWidget):
         self.status_message_label.setStyleSheet("color: #666666;")
         left_panel.addWidget(self.status_message_label)
 
+        # [Task 9.4] 偏好設定區塊
+        pref_layout = QHBoxLayout()
+        pref_layout.setContentsMargins(0, 10, 0, 10) # 上下留白
+        
+        self.check_guidance = QCheckBox("啟用氣泡引導")
+        self.check_guidance.setChecked(True)
+        self.check_guidance.setToolTip("開啟後，哨兵會在桌面顯示操作提示氣泡")
+        
+        self.check_smart = QCheckBox("啟用智慧配對")
+        self.check_smart.setChecked(True)
+        self.check_smart.setToolTip("開啟後，拖曳資料夾時會自動尋找 README.md")
+        
+        # 綁定事件：當勾選改變時，呼叫 _on_pref_changed
+        self.check_guidance.toggled.connect(self._on_pref_changed)
+        self.check_smart.toggled.connect(self._on_pref_changed)
+        
+        pref_layout.addWidget(self.check_guidance)
+        pref_layout.addWidget(self.check_smart)
+        pref_layout.addStretch(1)
+        
+        # 把這個設定區加入左側面板
+        left_panel.addLayout(pref_layout)
+
         # 讓這兩行資訊貼上去，底下留空（addStretch(1)）。
         left_panel.addStretch(1)
 
         # 右側：按鈕群（採用垂直佈局）
         button_panel = QVBoxLayout()
-        # 建立第一個按鈕：編輯哨兵忽略清單。
-        btn_sentry_ignore = QPushButton("編輯哨兵忽略清單…")
+        # 建立第一個按鈕：審查靜默項目 (對應 CLI Option 8)
+        # 改成 self.btn_audit_muted，方便後續控制
+        self.btn_audit_muted = QPushButton("審查靜默/過熱項目…")
+        self.btn_audit_muted.clicked.connect(self._open_audit_dialog) # 稍後實作此函式
 
-        # 建立第二個按鈕：編輯目錄樹忽略規則 ---
-        # 改成 self.btn_tree_ignore，讓它變成全域可存取的物件
+        # 建立第二個按鈕：編輯目錄樹忽略規則 (對應 CLI Option 10)
         self.btn_tree_ignore = QPushButton("編輯目錄樹忽略規則…")
-        # 綁定點擊事件到我們即將實作的 _open_ignore_settings_dialog 函式
         self.btn_tree_ignore.clicked.connect(self._open_ignore_settings_dialog)
 
-        # 預設禁用這兩個按鈕（setEnabled(False)）。
-        btn_sentry_ignore.setEnabled(False)
-        self.btn_tree_ignore.setEnabled(False) 
+        # 預設禁用這兩個按鈕
+        self.btn_audit_muted.setEnabled(False)
+        self.btn_tree_ignore.setEnabled(False)
 
         # 把按鈕依序加入（addWidget）到右側垂直佈局。
-        button_panel.addWidget(btn_sentry_ignore)
+        button_panel.addWidget(self.btn_audit_muted) 
         button_panel.addWidget(self.btn_tree_ignore)       
         # 加入拉伸因子（addStretch(1)），把按鈕推到頂部。
         button_panel.addStretch(1)
@@ -709,82 +1518,141 @@ class SentryConsoleWindow(QWidget):
         # 回傳（return）設定好的框架元件。
         return frame
 
-
+    def _on_pref_changed(self):
+        """[Task 9.4] 當 Checkbox 變更時，儲存設定並發送訊號"""
+        g = self.check_guidance.isChecked()
+        s = self.check_smart.isChecked()
+        
+        # [Task 9.4-Memory] 寫入記憶
+        if hasattr(self, 'settings'):
+            self.settings.setValue("enable_guidance", g)
+            self.settings.setValue("enable_smart_match", s)
+            
+        # 發射訊號
+        self.preferences_changed.emit(g, s)
 
     # ---------------------------
     # 從 backend_adapter 載入資料
     # ---------------------------
 
-    # 這裡，我們用「def」來定義（define）重新載入專案的函式。
     def _reload_projects_from_backend(self) -> None:
-        """呼叫 adapter.list_projects()，並刷新表格內容。"""
-        # 呼叫（call）後端（adapter）的 list_projects 函式，獲取所有的專案列表。
-        # 並將結果存回我們在 __init__ 準備的「空籃子」（self.current_projects）中。
+        """呼叫 adapter.list_projects()，並刷新表格內容 (訊號屏蔽版)。"""
+        # 1. 獲取資料
         self.current_projects = adapter.list_projects()
-
-        # 【修復】載入完資料後，立刻算一次人頭。
+        
+        # 2. 更新統計與 Tooltip
         self._notify_stats_update()
 
-        self.project_table.setRowCount(len(self.current_projects))
-
-        # --- [Task J] 計算統計數據 ---
-        running_count = 0
-        muting_count = 0
-        for p in self.current_projects:
-            if p.status == "monitoring":
-                if p.mode == "silent":
-                    muting_count += 1
-                else:
-                    running_count += 1
+        # [關鍵修正] 暫時切斷表格的訊號，避免更新過程觸發不必要的 selectionChanged
+        self.project_table.blockSignals(True)
         
-        # 如果有設定回調，就通知上層更新 Tooltip
-        if self.on_stats_change:
-            self.on_stats_change(running_count, muting_count)
+        try:
+            self.project_table.setRowCount(len(self.current_projects))
+            
+            for row, proj in enumerate(self.current_projects):
+                # 1. UUID (隱藏)
+                uuid_item = QTableWidgetItem(proj.uuid)
+                uuid_item.setFlags(uuid_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.project_table.setItem(row, 0, uuid_item)
 
-        # 設定表格的行數（setRowCount），使其等於當前專案的數量（len）。
-        self.project_table.setRowCount(len(self.current_projects))
+                # 2. 名稱
+                name_item = QTableWidgetItem(proj.name)
+                name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.project_table.setItem(row, 1, name_item)
+
+                # 3. 狀態
+                status_item = QTableWidgetItem(self._status_to_label(proj.status))
+                status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.project_table.setItem(row, 2, status_item)
+
+                # 4. 模式
+                mode_item = QTableWidgetItem(self._mode_to_label(proj.mode))
+                mode_item.setFlags(mode_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.project_table.setItem(row, 3, mode_item)
+
+            # [關鍵修正] 資料填完後，手動處理選取狀態
+            if self.current_projects:
+                # 預設選取第一行 (或者您可以改成保持之前的選取，但選第一行最穩)
+                self.project_table.selectRow(0)
+                
+                # 手動更新詳情面板 (因為訊號被切斷了，必須手動呼叫)
+                self._update_detail_panel(self.current_projects[0])
+            else:
+                self._update_detail_panel(None)
+                
+        finally:
+            # [關鍵修正] 無論如何，最後一定要把訊號接回去，不然使用者就不能點擊了
+            self.project_table.blockSignals(False)
+
+    def _refresh_current_log(self):
+        """[自動呼叫] 刷新當前選中專案的日誌"""
+        # 如果視窗沒顯示，就不用浪費效能去抓
+        if not self.isVisible():
+            return
+
+        # 獲取當前選中的行
+        row = self.project_table.currentRow()
+        if row < 0 or row >= len(self.current_projects):
+            return
+
+        # 獲取 UUID
+        proj = self.current_projects[row]
         
-        # 我們用「for...in...」這個結構，來一個一個地（enumerate）處理所有專案（self.current_projects）。
-        # enumerate 會給我們行號（row）和專案物件（proj）。
-        for row, proj in enumerate(self.current_projects):
-            # --- 1. UUID（隱藏欄）---
-            # 建立一個表格項目（QTableWidgetItem），內容是專案的 UUID。
-            uuid_item = QTableWidgetItem(proj.uuid)
-            # 設置標誌（setFlags）：使用位運算子（& ~）把「可編輯（ItemIsEditable）」的特性關掉。
-            uuid_item.setFlags(uuid_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            # 把這個項目設定（setItem）到表格的指定行（row）、第 0 欄。
-            self.project_table.setItem(row, 0, uuid_item)
+        # 呼叫 Adapter 獲取最新日誌
+        logs = adapter.get_log_content(proj.uuid)
+        
+        # 更新顯示 (LogViewerWidget 會自動處理捲動)
+        if hasattr(self, 'log_viewer'):
+            self.log_viewer.set_logs(logs)
 
-            # --- 2. 名稱 ---
-            # 建立名稱的表格項目，內容是專案名稱（proj.name）。
-            name_item = QTableWidgetItem(proj.name)
-            # 設置標誌：關閉編輯功能。
-            name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            # 把這個項目設定到表格的指定行（row）、第 1 欄。
-            self.project_table.setItem(row, 1, name_item)
+    def _open_audit_dialog(self) -> None:
+        """[Task 9.4] 審查靜默項目 (Audit)"""
+        # 1. 防呆：確認有選到專案
+        row = self.project_table.currentRow()
+        if row < 0 or row >= len(self.current_projects):
+            return
+        
+        proj = self.current_projects[row]
+        
+        self._set_status_message(f"正在查詢專案 '{proj.name}' 的靜默狀態...", level="info")
+        # 讓介面轉圈圈，避免卡頓感
+        QApplication.processEvents()
 
-            # --- 3. 監控狀態 ---
-            # 建立狀態的表格項目，這裡呼叫（call）另一個函式把狀態（proj.status）轉換成中文標籤。
-            status_item = QTableWidgetItem(self._status_to_label(proj.status))
-            # 設置標誌：關閉編輯功能。
-            status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            # 把這個項目設定到表格的指定行（row）、第 2 欄。
-            self.project_table.setItem(row, 2, status_item)
+        try:
+            # 2. 呼叫 Adapter 查詢 (注意：這個方法我們等一下才要在 adapter.py 補上！)
+            muted_paths = adapter.get_muted_paths(proj.uuid)
+            
+            if not muted_paths:
+                QMessageBox.information(self, "審查結果", "目前沒有被靜默的路徑，一切正常。")
+                self._set_status_message("審查完成：無異常。", level="success")
+                return
 
-            # --- 4. 模式 ---
-            # 建立模式的表格項目，呼叫（call）另一個函式把模式（proj.mode）轉換成中文標籤。
-            mode_item = QTableWidgetItem(self._mode_to_label(proj.mode))
-            # 設置標誌：關閉編輯功能。
-            mode_item.setFlags(mode_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            # 把這個項目設定到表格的指定行（row）、第 3 欄。
-            self.project_table.setItem(row, 3, mode_item)
+            # 3. 構建詢問訊息
+            msg = "發現以下路徑因頻繁變動已被暫時靜默：\n\n"
+            # 只顯示前 10 行，避免視窗爆炸
+            msg += "\n".join(muted_paths[:10]) 
+            if len(muted_paths) > 10:
+                msg += f"\n... 以及其他 {len(muted_paths)-10} 個"
+            msg += "\n\n是否將它們「固化」到忽略清單中？(這將永久忽略它們)"
 
-        # 用「if」來判斷，如果（if）專案列表（self.current_projects）裡面有東西...
-        if self.current_projects:
-            # 就預設選取（selectRow）第一行（0）。
-            self.project_table.selectRow(0)
-            # 並且呼叫（call）_update_detail_panel 函式，顯示第一行專案的詳細資訊。
-            self._update_detail_panel(self.current_projects[0])
+            # 4. 彈出對話框
+            reply = QMessageBox.question(self, "發現靜默項目", msg, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                # 5. 確認後呼叫 Adapter 執行固化 (這個方法我們等一下也要補！)
+                adapter.solidify_ignore_patterns(proj.uuid)
+                
+                self._set_status_message(f"✓ 已固化忽略規則。", level="success")
+                QMessageBox.information(self, "成功", "已更新忽略規則，哨兵將自動重啟。")
+                
+                # 6. 刷新介面
+                self._reload_projects_from_backend()
+            else:
+                self._set_status_message("已取消審查操作。", level="info")
+
+        except Exception as e:
+            self._set_status_message(f"審查失敗：{e}", level="error")
+            QMessageBox.critical(self, "錯誤", f"無法執行審查：\n{e}")
 
     def _open_ignore_settings_dialog(self) -> None:
         """打開忽略規則設定視窗"""
@@ -894,12 +1762,13 @@ class SentryConsoleWindow(QWidget):
         # 獲取（get）目前選取的行號（currentRow）。
         row = self.project_table.currentRow()
         
-        # 用「if」來判斷：如果（if）行號小於 0（沒選到）或者超過了專案總數...
+        # 用「if」來判斷：如果（if）行號小於 0（沒選取）...
         if row < 0 or row >= len(self.current_projects):
-            # 就呼叫（call）_update_detail_panel 函式，並傳入 None（代表清空詳情面板）。
             self._update_detail_panel(None)
             self.btn_tree_ignore.setEnabled(False)
-            # 用「return」結束這個函式。
+            # [New] 清空日誌
+            if hasattr(self, 'log_viewer'):
+                self.log_viewer.set_logs([])
             return
 
         # 從「專案籃子」（self.current_projects）中，根據行號（row）取出選取的專案（proj）。
@@ -909,10 +1778,18 @@ class SentryConsoleWindow(QWidget):
 
         # 有選到專案，啟用按鈕
         self.btn_tree_ignore.setEnabled(True) 
+        # [Task 9.4-Audit] 解除封印：只要選中專案，就允許審查
+        self.btn_audit_muted.setEnabled(True)
 
+        # [New] 讀取並顯示日誌
+        # 呼叫 Adapter 獲取該專案的日誌內容
+        logs = adapter.get_log_content(proj.uuid)
+        # 餵給顯示器
+        self.log_viewer.set_logs(logs)
+    
     # 這裡，我們用「def」來定義（define）當專案列表被雙擊時（double_clicked）執行的函式。
     def _on_project_double_clicked(self) -> None:
-        """雙擊列 → 切換監控狀態（只改 stub 狀態，不呼叫真後端）。"""
+        """雙擊列 → 切換監控狀態。"""
 
         # 1. 先確認有選到有效列
         # 獲取（get）目前選取的行號（currentRow）。
@@ -977,69 +1854,65 @@ class SentryConsoleWindow(QWidget):
             level="success",
         )
 
-    # 這裡，我們用「def」來定義（define）處理表格右鍵選單的函式。
     def _on_table_context_menu(self, position) -> None:
-        """顯示右鍵選單：手動更新 / 刪除專案。"""
-        # 獲取（get）滑鼠點擊位置對應的索引（index）。
-        index = self.project_table.indexAt(position)
-        # 如果（if）點擊位置無效（沒點到行），就直接結束。
-        if not index.isValid():
+        """顯示右鍵選單：支援批次刪除。"""
+        # 獲取所有選取的列 (rows)
+        selection = self.project_table.selectionModel().selectedRows()
+        if not selection:
             return
 
-        # 獲取行號。
-        row = index.row()
-        
-        # 獲取該列的 UUID（第 0 欄）和名稱（第 1 欄）。
-        uuid_item = self.project_table.item(row, 0)
-        name_item = self.project_table.item(row, 1)
-        
-        # 防呆：如果拿不到資料，就結束。
-        if not uuid_item or not name_item:
-            return
-            
-        project_uuid = uuid_item.text()
-        project_name = name_item.text()
-
-        # 建立（create）一個選單物件。
         menu = QMenu(self.project_table)
-
-        # [選項 A] 手動觸發更新
-        action_update = QAction("🔄 立即手動更新 (Manual Update)", menu)
-        # 綁定事件：使用 lambda 傳遞參數給處理函式。
-        action_update.triggered.connect(
-            lambda checked: self._perform_manual_update(project_uuid, project_name)
-        )
-        menu.addAction(action_update)
-
-        menu.addAction(action_update)
-
-        # 加入分隔線。
-        # 我們用「menu.addSeparator()」來新增（add）分隔線。
-        menu.addSeparator() 
-
-        # [選項 C] 修改專案
-        # 我們用「action_edit = QAction("📝 修改專案...", menu)」來建立（create）動作。
-        action_edit = QAction("📝 修改專案...", menu)
-        # 我們用「action_edit.triggered.connect(...)」來連線（connect）觸發訊號。
-        action_edit.triggered.connect(
-            lambda checked: self._perform_edit_project(project_uuid, project_name)
-        )
-        # 我們用「menu.addAction(action_edit)」來新增（add）動作。
-        menu.addAction(action_edit)
         
-        # 加入分隔線。
-        # 我們用「menu.addSeparator()」來新增（add）分隔線。
-        menu.addSeparator()
+        # 判斷選取數量
+        count = len(selection)
+        
+        if count == 1:
+            # 單選邏輯 (保持原有功能：更新、修改、刪除)
+            row = selection[0].row()
+            uuid_item = self.project_table.item(row, 0)
+            name_item = self.project_table.item(row, 1)
+            
+            if not uuid_item or not name_item: return
+            
+            p_uuid = uuid_item.text()
+            p_name = name_item.text()
 
-        # [選項 B] 刪除專案 (紅字警告風格)
-        action_delete = QAction("🗑️ 刪除此專案...", menu)
-        # 綁定事件。
-        action_delete.triggered.connect(
-            lambda checked: self._perform_delete_project(project_uuid, project_name)
-        )
-        menu.addAction(action_delete)
+            action_update = QAction("🔄 立即手動更新", menu)
+            action_update.triggered.connect(lambda: self._perform_manual_update(p_uuid, p_name))
+            menu.addAction(action_update)
+            
+            menu.addSeparator()
+            
+            action_edit = QAction("📝 修改專案...", menu)
+            action_edit.triggered.connect(lambda: self._perform_edit_project(p_uuid, p_name))
+            menu.addAction(action_edit)
+            
+            menu.addSeparator()
+            
+            action_delete = QAction("🗑️ 刪除此專案...", menu)
+            action_delete.triggered.connect(lambda: self._perform_delete_project([(p_uuid, p_name)]))
+            menu.addAction(action_delete)
+            
+        else:
+            # 多選邏輯 (只允許批量刪除，避免邏輯複雜化)
+            # 收集所有選取的 (uuid, name)
+            targets = []
+            for index in selection:
+                row = index.row()
+                # [修正] 防禦性寫法：先取出 item，檢查是否存在
+                item_u = self.project_table.item(row, 0)
+                item_n = self.project_table.item(row, 1)
+                
+                # 只有當兩個格子都有東西時，才取文字
+                if item_u and item_n:
+                    targets.append((item_u.text(), item_n.text()))
+            
+            label_text = f"🗑️ 批量刪除 ({count} 個專案)..."
+            action_batch_delete = QAction(label_text, menu)
+            # 傳遞列表給刪除函式
+            action_batch_delete.triggered.connect(lambda: self._perform_delete_project(targets))
+            menu.addAction(action_batch_delete)
 
-        # 在滑鼠位置顯示（exec）選單。
         menu.exec(self.project_table.viewport().mapToGlobal(position))
 
     # 這裡，我們用「def」來定義（define）執行手動更新的動作函式。
@@ -1063,42 +1936,58 @@ class SentryConsoleWindow(QWidget):
             # 彈出錯誤警告框。
             QMessageBox.critical(self, "更新失敗", str(e))
 
-    # 這裡，我們用「def」來定義（define）執行刪除專案的動作函式。
-    def _perform_delete_project(self, uuid: str, name: str) -> None:
-        # 1. 彈出確認視窗 (防呆)
+    def _perform_delete_project(self, targets: list[tuple[str, str]]) -> None:
+        """執行刪除專案 (支援單刪與批刪)"""
+        count = len(targets)
+        if count == 0: return
+
+        # 1. 構建確認訊息
+        if count == 1:
+            uuid, name = targets[0]
+            msg_title = "確認刪除"
+            msg_body = f"您確定要刪除專案「{name}」嗎？"
+        else:
+            names = "\n".join([f"- {t[1]}" for t in targets[:5]]) # 最多顯示前5個名字
+            if count > 5: names += "\n...等"
+            msg_title = f"確認批量刪除 ({count} 個)"
+            msg_body = f"您確定要刪除以下 {count} 個專案嗎？\n\n{names}"
+
+        msg_body += "\n\n這將會停止哨兵並移除設定 (檔案保留)。"
+
+        # 2. 彈出確認
         reply = QMessageBox.question(
-            self,
-            "確認刪除",
-            f"您確定要刪除專案「{name}」嗎？\n\n"
-            "這將會：\n"
-            "1. 停止該專案的哨兵 (若在運行)\n"
-            "2. 從設定檔移除專案\n"
-            "3. 清除相關日誌與暫存檔\n\n"
-            "(不會刪除您的原始檔案)",
+            self, msg_title, msg_body,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
 
-        # 如果使用者沒有按 Yes，就結束。
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        # 2. 執行刪除
-        try:
-            # 呼叫後端刪除。
-            adapter.delete_project(uuid)
-            self._set_status_message(f"✓ 專案 '{name}' 已刪除。", level="success")
-            
-            # 3. 刪除後重整列表（重要！這樣 UI 才會消失）。
-            self._reload_projects_from_backend()
-            # 清空右側詳情區。
-            self._update_detail_panel(None)
-            
-        except Exception as e:
-            self._set_status_message(f"刪除失敗：{e}", level="error")
-            QMessageBox.critical(self, "刪除失敗", str(e))
+        # 3. 執行刪除循環
+        success_count = 0
+        errors = []
+        
+        self._set_status_message(f"正在刪除 {count} 個專案...", level="info")
+        QApplication.processEvents()
 
-            # tray_app.py (在 _perform_delete_project 函式下方)
+        for uuid, name in targets:
+            try:
+                adapter.delete_project(uuid)
+                success_count += 1
+            except Exception as e:
+                errors.append(f"{name}: {str(e)}")
+
+        # 4. 結果回饋與刷新
+        self._reload_projects_from_backend()
+        self._update_detail_panel(None) # 清空詳情避免殘留
+
+        if len(errors) == 0:
+            self._set_status_message(f"✓ 成功刪除 {success_count} 個專案。", level="success")
+        else:
+            err_msg = "\n".join(errors)
+            QMessageBox.critical(self, "部分刪除失敗", f"成功: {success_count}\n失敗: {len(errors)}\n\n錯誤詳情:\n{err_msg}")
+            self._set_status_message(f"刪除完成，但有 {len(errors)} 個失敗。", level="error")
 
 # 我們用「def」來定義（define）執行編輯專案函式。
     def _perform_edit_project(self, uuid: str, name: str) -> None:
@@ -1120,8 +2009,24 @@ class SentryConsoleWindow(QWidget):
             # 3. 獲取所有變動
             changes = dialog.get_changes()
             
-            if not changes:
+            # 檢查即時變更日誌
+            logs = dialog.change_log
+            
+            if not changes and not logs:
                 self._set_status_message("沒有任何變更，已取消操作。", level="info")
+                return
+            
+            # 準備成功訊息
+            success_msg = "✓ 專案已更新"
+            if logs:
+                # 將日誌串接起來顯示 (最多顯示 3 筆，太多就省略)
+                details = ", ".join(logs[:3])
+                if len(logs) > 3: details += f" ...等 {len(logs)} 項"
+                success_msg += f" ({details})"
+            
+            if not changes and logs:
+                self._set_status_message(success_msg, level="success")
+                self._reload_projects_from_backend()
                 return
             
             # 4. 逐一呼叫後端 API 進行修改
@@ -1150,182 +2055,6 @@ class SentryConsoleWindow(QWidget):
                 final_error = "\n".join(error_details)
                 self._set_status_message(f"更新失敗！詳情請見彈出視窗。", level="error")
                 QMessageBox.critical(self, "部分更新失敗", f"專案 '{name}' 的部分欄位未能更新。\n\n錯誤詳情:\n{final_error}")
-
-    def _on_select_new_path(self, button: QPushButton) -> None:
-        """
-        【一對多】統一的路徑選擇器：
-        - 根據點擊的按鈕是哪個欄位（Project Folder 或 Output File），呼叫不同的 QFileDialog。
-        - 並將結果填入對應的 QLineEdit 輸入框。
-        """
-        # HACK: QFileDialog 需要 QtWidgets 中的 QPushButton，我們需要確保其類型正確。
-        from PySide6.QtWidgets import QPushButton, QFileDialog
-
-        # 找到被點擊按鈕在 self.new_browse_buttons 籃子中的位置（索引 i）。
-        try:
-            # DEFENSE: 這裡用 DEFENSE 標籤標註，這是一個防呆檢查。
-            index = self.new_browse_buttons.index(button)
-        except ValueError:
-            # 這是極度不可能發生的狀況（除非有程式碼被亂動），直接結束。
-            return
-
-        # 獲取（get）對應索引的輸入框。
-        target_edit = self.new_input_fields[index]
-
-        # 用「if...else」來判斷：如果（if）索引是 0（專案資料夾）...
-        if index == 0:
-            # 呼叫（call）QFileDialog.getExistingDirectory，讓使用者選擇現有的**資料夾**。
-            path = QFileDialog.getExistingDirectory(self, "選擇專案資料夾")
-            # 如果（if）使用者有選擇（path 不是空字串）...
-            if path:
-                # 就把路徑設定（setText）到輸入框。
-                target_edit.setText(path)
-        else:
-            # 否則（else），呼叫（call）QFileDialog.getOpenFileName，讓使用者選擇**檔案**。
-            # NOTE: 我們將允許使用者建立新檔案，所以這裡使用 OpenFileName 只是為了獲得路徑。
-            file_path, _ = QFileDialog.getOpenFileName(
-                self,
-                f"選擇寫入檔路徑 {index}",
-                "",
-                "Markdown 文件 (*.md);;所有檔案 (*.*)", # 新增 .md 篩選
-            )
-            # 如果（if）使用者有選擇（file_path 不是空字串）...
-            if file_path:
-                # 就把路徑設定（setText）到輸入框。
-                target_edit.setText(file_path)
-
-        # 呼叫（call）_update_new_project_submit_state 函式，重新檢查一次是否可以送出。
-        # NOTE: 此時 _update_new_project_submit_state 函式中的舊邏輯會報錯，下一輪處理。
-        self._update_new_project_submit_state()
-
-
-    def _on_submit_new_project(self) -> None:
-        """
-        按下「確認新增」時呼叫：
-        - 處理輸入資料 (支援自訂別名)
-        - 呼叫後端 (含重名自動重試邏輯)
-        - 更新 UI
-        """
-        # --- 1. 獲取所有路徑 ---
-        folder = self.new_input_fields[0].text().strip()
-        primary_output_file = self.new_input_fields[1].text().strip()
-
-        # # DEFENSE: 防呆檢查
-        if not folder or not primary_output_file:
-            return
-
-        from pathlib import Path
-        
-        # --- 決定專案名稱 (Task I 核心邏輯) ---
-        # 1. 先計算預設名稱 (資料夾名)
-        default_name = Path(folder).name or folder
-        
-        # 2. 檢查是否啟用自由模式且有輸入別名
-        alias_input = self.alias_edit.text().strip()
-        use_alias = self.mode_checkbox.isChecked() and bool(alias_input)
-        
-        # 3. 設定初始嘗試的名字
-        if use_alias:
-            current_name = alias_input
-        else:
-            current_name = default_name
-
-        # 獲取額外目標 (目前僅用於顯示資訊，尚未寫入)
-        extra_targets = [
-            self.new_input_fields[i].text().strip()
-            for i in range(2, 4) if self.new_input_fields[i].text().strip()
-        ]
-        
-        # 準備顯示用的資訊
-        primary_output_filename = Path(primary_output_file).name
-        extra_count = len(extra_targets)
-        targets_msg = f"（額外目標：{extra_count} 個）"
-
-        # --- 核心 UX 優化：重名自動重試迴圈 ---
-        while True:            
-            try:
-                # 嘗試呼叫後端新增
-                adapter.add_project(name=current_name, path=folder, output_file=primary_output_file)
-                
-                # --- 如果程式跑到這裡，代表成功了！ ---
-                
-                # 1. 準備成功訊息
-                ux_message = (
-                    f"✓ 專案新增成功！\n\n"
-                    f"專案名稱: {current_name}\n"
-                    f"主目標檔: {primary_output_filename}\n"
-                    f"額外目標: {extra_count} 個\n\n"
-                    "後端已更新設定，您可以立即啟動監控。"
-                )
-
-                # 2. 彈出成功視窗
-                QMessageBox.information(self, "新增成功", ux_message)
-                
-                # 3. 更新底部狀態列
-                self._set_status_message(
-                    f"✓ 專案 '{current_name}' 新增成功。{targets_msg}",
-                    level="success",
-                )
-
-                # 4. 清空欄位 + 重繪列表
-                for edit in self.new_input_fields:
-                    edit.clear()
-
-                self._update_new_project_submit_state()
-                self._reload_projects_from_backend()
-                self._update_detail_panel(None)
-                
-                # 成功，跳出迴圈
-                break 
-
-            except adapter.BackendError as e:
-                error_msg = str(e)
-                # 【關鍵判定】檢查是否為重名錯誤
-                # (對應 daemon 拋出的: "專案別名 'xxx' 已被佔用")
-                if "已被佔用" in error_msg:
-                    # 彈出輸入框讓使用者改名
-                    new_name, ok = QInputDialog.getText(
-                        self, 
-                        "專案名稱衝突", 
-                        f"名稱 '{current_name}' 已存在。\n請輸入新的專案別名：",
-                        text=current_name + "_new"
-                    )
-                    
-                    if ok and new_name:
-                        # 如果使用者輸入新名字並按 OK，更新名字，重跑迴圈 (continue)
-                        current_name = new_name.strip()
-                        continue
-                    else:
-                        # 如果使用者按取消，視為放棄操作
-                        self._set_status_message(f"新增取消：名稱衝突", level="error")
-                        return
-                
-                # 如果是其他錯誤 (如路徑不存在)，直接報錯並結束
-                self._set_status_message(f"新增專案失敗：{error_msg}", level="error")
-                return
-
-    # 這裡，我們用「def」來定義（define）更新新增專案按鈕狀態的函式。
-    def _update_new_project_submit_state(self) -> None:
-        """依據輸入籃子中的第一個（Folder）和第二個（Primary Output）欄位是否有內容，決定送出按鈕是否啟用。"""
-        # 預先告知：由於 UI 啟動時 _build_input_fields 尚未完全完成，這裡可能會在極短時間內因 self.new_input_fields 尚未定義而崩潰，這是正常的。
-
-        # # DEFENSE: 這裡用 DEFENSE 標籤標註，這是一個防呆檢查，確保 self.new_input_fields 已經被建立。
-        # 我們只在 self.new_input_fields 已經被建立（且包含至少 2 個輸入框）時才執行檢查。
-        if not hasattr(self, 'new_input_fields') or len(self.new_input_fields) < 2:
-            return
-
-        # 獲取（get）專案資料夾輸入框的文字，去除空格，並用 bool() 判斷是否有內容（folder_ok）。
-        # new_input_fields[0] = Project Folder
-        folder_ok = bool(self.new_input_fields[0].text().strip())
-        
-        # 獲取（get）主要輸出檔輸入框的文字，去除空格，並用 bool() 判斷是否有內容（primary_output_ok）。
-        # new_input_fields[1] = Primary Output File
-        primary_output_ok = bool(self.new_input_fields[1].text().strip())
-        
-        # 設定（setEnabled）送出按鈕的啟用狀態：只有當兩個條件（folder_ok 和 primary_output_ok）都成立（and）時才啟用。
-        self.new_project_submit_button.setEnabled(folder_ok and primary_output_ok)
-
-        # 同步詳情區：當輸入框有變動時，清空詳情區，避免誤導。
-        self._update_detail_panel(None)
 
     # ---------------------------
     # 詳情區更新
@@ -1363,92 +2092,6 @@ class SentryConsoleWindow(QWidget):
         # 用換行符號（\n）連接（join）文字籃子，並設定（setText）到詳情標籤上。
         self.detail_label.setText("\n".join(text_lines))
 
-    def dragEnterEvent(self, event) -> None:
-        """
-        處理拖曳進入事件：設定視窗為可接受拖曳。
-        """
-        if event.mimeData().hasUrls():
-            event.accept()
-        else:
-            event.ignore()
-
-    def dropEvent(self, event) -> None:
-        """
-        處理放下事件 (最終版)：
-        1. 多檔智能路由。
-        2. 類型白名單過濾。
-        3. [新增] 防止重複路徑填入。
-        """
-        from pathlib import Path
-        from PySide6.QtWidgets import QLineEdit
-        
-        # DEFENSE: 檢查事件中是否有路徑（URL）資訊。
-        if not event.mimeData().hasUrls():
-            event.ignore()
-            return
-            
-        # 獲取所有拖曳的路徑列表。
-        urls = event.mimeData().urls()
-        
-        # 定義允許的寫入檔副檔名（白名單）。
-        VALID_EXTENSIONS = {'.md', '.markdown', '.txt', '.log'}
-        
-        filled_count = 0
-        
-        # 迴圈處理每一個拖曳進來的路徑。
-        for url in urls:
-            path_str = url.toLocalFile()
-            path_obj = Path(path_str)
-            
-            # [新增] 防呆檢查：檢查路徑是否已經存在於任何一個輸入框中
-            # 我們建立一個集合，包含所有目前輸入框內的文字（去除空格）
-            current_values = {f.text().strip() for f in self.new_input_fields}
-            
-            if path_str in current_values:
-                # 如果已經存在，就直接跳過，不處理這個檔案
-                continue
-
-            # 1. 處理資料夾 -> 嘗試填入專案資料夾 (索引 0)
-            if path_obj.is_dir():
-                folder_input = self.new_input_fields[0]
-                if not folder_input.text().strip():
-                    folder_input.setText(path_str)
-                    filled_count += 1
-            
-            # 2. 處理檔案 -> 先檢查副檔名，再嘗試填入寫入檔
-            elif path_obj.is_file():
-                if path_obj.suffix.lower() in VALID_EXTENSIONS:
-                    for i in range(1, 4):
-                        file_input = self.new_input_fields[i]
-                        if not file_input.text().strip():
-                            file_input.setText(path_str)
-                            filled_count += 1
-                            break 
-
-        # --- 總結處理結果 ---
-        if filled_count > 0:
-            event.acceptProposedAction()
-            self._update_new_project_submit_state()
-            msg = f"批量拖曳成功：已填入 {filled_count} 個欄位。"
-            self._set_status_message(msg, level="success")
-        else:
-            # 可能是欄位滿了、類型不對、或者是重複的路徑
-            self._set_status_message("拖曳無效：沒有填入任何欄位 (重複、格式不符或欄位已滿)。", level="error")
-            event.ignore()
-
-        # --- 總結處理結果 ---
-        if filled_count > 0:
-            event.acceptProposedAction()
-            self._update_new_project_submit_state()
-            
-            # 簡化後的成功訊息。
-            msg = f"批量拖曳成功：已填入 {filled_count} 個欄位。"
-            self._set_status_message(msg, level="success")
-        else:
-            # 如果一個都沒填進去（可能是欄位滿了，或是所有檔案都被過濾了）。
-            self._set_status_message("拖曳無效：沒有可填入的欄位，或檔案格式不支援。", level="error")
-            event.ignore()
-
     # ---------------------------
     # 標籤轉換（之後可以抽成 i18n）
     # ---------------------------
@@ -1466,99 +2109,58 @@ class SentryConsoleWindow(QWidget):
     def _mode_to_label(mode: str) -> str:
         # 用「return ... if ... else ...」來判斷並回傳（return）中文標籤。
         return "靜默" if mode == "silent" else "互動"
+    
+    # --- 實作無邊框視窗的拖曳功能 ---
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.old_pos = event.globalPosition().toPoint()
+
+    def mouseMoveEvent(self, event):
+        if self.old_pos:
+            delta = event.globalPosition().toPoint() - self.old_pos
+            # 注意：這裡是移動父容器 (SentryTrayAppV2.container)
+            # 因為 DashboardWidget 只是 container 裡的一頁
+            self.window().move(self.window().pos() + delta)
+            self.old_pos = event.globalPosition().toPoint()
+
+    def mouseReleaseEvent(self, event):
+        self.old_pos = None
 
 
-class SentryTrayApp:
-    """系統托盤應用程式：負責托盤圖示與主控台視窗。"""
-
-    def __init__(self, app: QApplication) -> None:
-        self.app = app
+# ==========================================
+#   View B: 模擬「控制台」 (Dashboard)
+# ==========================================
+# 我們用「class」來 定義（define）一個模擬的視圖 B。
+class MockViewB(QWidget):
+    def __init__(self, switch_callback):
+        super().__init__()
+        # 設定（set）背景為白色，字體為黑色，模擬「控制台」的亮色風格。
+        self.setStyleSheet("background-color: white; color: black;")
         
-        # [Task J] 載入圖示 (先載入圖示，後面建立 Tray 時會用到)
-        icon = self._load_icon()
-        self.tray_icon = QSystemTrayIcon(icon, self.app)
+        layout = QVBoxLayout(self)
         
-        # [Task J] 傳入 update_tooltip 作為回調
-        self.console = SentryConsoleWindow(on_stats_change=self.update_tooltip)
+        # 顯示標題
+        label = QLabel("View B: 控制台 (Legacy List)")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(label)
+        
+        # 測試按鈕：返回眼睛
+        btn_back = QPushButton("↩ 返回哨兵之眼")
+        # 當按鈕被點擊（clicked）時，執行切換回調。
+        btn_back.clicked.connect(switch_callback)
+        layout.addWidget(btn_back)
 
-        # 建立右鍵選單
-        menu = QMenu()
-        self._build_menu(menu)
-        self.tray_icon.setContextMenu(menu)
-
-        # 左鍵點擊托盤 → 切換顯示/隱藏
-        self.tray_icon.activated.connect(self._on_activated)
-
-        self.tray_icon.show()
-
-    # 這裡，我們用「def」來定義（define）載入托盤圖標的函式。
-    def _load_icon(self) -> QIcon:
-        """從 assets/icons/tray_icon.png 載入圖示；若失敗則使用系統預設圖示。"""
-        # 獲取（get）當前檔案的根路徑（Path(__file__).resolve().parents[2]）。
-        root = Path(__file__).resolve().parents[2]
-        # 拼接出（/）目標圖標檔案的完整路徑。
-        icon_path = root / "assets" / "icons" / "tray_icon.png"
-
-        # 用「if」來判斷：如果（if）圖標路徑是一個檔案（is_file）...
-        if icon_path.is_file():
-            # 就嘗試用這個路徑建立一個圖標（QIcon）。
-            icon = QIcon(str(icon_path))
-            # 再用「if」來判斷：如果（if）圖標不是空的（isNull）...
-            if not icon.isNull():
-                # 就回傳（return）這個圖標。
-                return icon
-
-        # 後備方案：使用系統內建圖示，避免 QSystemTrayIcon::setVisible: No Icon set
-        # 獲取（get）當前應用程式的實例（instance）。
-        app = QApplication.instance()
-        # 用「if」來判斷：如果（if）應用程式實例不是空的...
-        if app is not None:
-            # 這是為了 Pylance 類型提示，強制轉換（cast）應用程式實例為 QApplication。
-            app_qt = cast(QApplication, app)
-            # 獲取（get）應用程式的樣式（style）物件。
-            style = app_qt.style()
-            # 回傳（return）系統標準圖標（StandardPixmap.SP_ComputerIcon）作為後備。
-            return style.standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
-
-        # 理論上不會跑到這裡；保底回傳一個空 icon
-        # 最後的防呆機制，回傳（return）一個空的圖標。
-        return QIcon()
-
-
-
-# 這裡，我們用「def」來定義（define）建立右鍵選單的函式。
-    def _build_menu(self, menu: QMenu) -> None:
-        """建立托盤右鍵選單。"""
-
-        # 建立一個「動作」（QAction），它是選單中的一個選項。
-        open_console_action = QAction("開啟控制台", menu)
-        # 把這個動作的觸發事件（triggered）綁定（connect）到 show_console 函式。
-        open_console_action.triggered.connect(self.show_console)
-
-        # 建立另一個「動作」：退出應用程式。
-        quit_action = QAction("退出", menu)
-        # 把退出動作綁定（connect）到應用程式的退出函式（self.app.quit）。
-        quit_action.triggered.connect(self.app.quit)
-
-        # 把「開啟控制台」這個動作加入（addAction）到選單中。
-        menu.addAction(open_console_action)
-        # 加入一條分隔線（addSeparator），把控制台和退出選項分開。
-        menu.addSeparator()
-        # 把「退出」動作加入（addAction）到選單中。
-        menu.addAction(quit_action)
-
-    # 這裡，我們用「def」來定義（define）顯示主控制台視窗的函式。
-    def show_console(self) -> None:
-        """顯示控制台視窗並把它拉到前景。"""
-        # 顯示（show）控制台視窗。
-        self.console.show()
-        # 將視窗拉到前景，以便使用者看到它。
-        self.console.activateWindow()
-        # 確保視窗堆疊順序正確（raise_()）。
-        self.console.raise_()
-
+# ==========================================
+#   主控制器：v2.0 托盤應用程式
+# ==========================================
+class SentryTrayAppV2:
     def update_tooltip(self, running: int, muting: int) -> None:
-        """[Task J] 動態更新托盤提示文字"""
+        """更新托盤圖示的 Tooltip 顯示狀態，並檢查循環依賴。"""
+        # [DEFENSE] 檢查 self.tray_icon 是否已經被初始化，防止 Dashboard 在載入時提前呼叫導致 AttributeError。
+        if not hasattr(self, 'tray_icon') or self.tray_icon is None:
+            return
+
+        # 我們用「if...else」判斷狀態並組合（concatenate）字串。
         if running == 0 and muting == 0:
             msg = "Sentry: 目前無監控"
         else:
@@ -1567,44 +2169,116 @@ class SentryTrayApp:
                 msg += f" / {muting} 個靜默中"
         
         self.tray_icon.setToolTip(msg)
+    def __init__(self, app: QApplication):
+        self.app = app
+        
+        # --- 1. 建立托盤圖示 ---
+        self.tray_icon = QSystemTrayIcon(self._load_icon(), self.app)
+        
+        # 建立右鍵選單
+        menu = QMenu()
+        # 建立「顯示/隱藏」動作
+        action_show = QAction("顯示/隱藏視窗", menu)
+        action_show.triggered.connect(self.toggle_window)
+        menu.addAction(action_show)
+        
+        # 建立「退出」動作
+        action_quit = QAction("退出 Sandbox", menu)
+        action_quit.triggered.connect(self.app.quit)
+        
+        menu.addAction(action_quit)
+        self.tray_icon.setContextMenu(menu)
+        
+        # 左鍵點擊托盤也觸發切換
+        self.tray_icon.activated.connect(self._on_tray_activated)
+        
+        self.tray_icon.show()
 
-    # 這裡，我們用「def」來定義（define）托盤圖示被激活時（activated）的處理函式。
-    def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        """托盤圖示被點擊時的行為：左鍵 → 切換 顯示/隱藏。"""
+        # --- 2. 建立雙視圖容器 ---
+        # 我們建立（create）一個堆疊容器，它可以像紙牌一樣切換頁面。
+        self.container = QStackedWidget()
+        self.container.setWindowTitle("Sentry v2.0 Sandbox")
+        self.container.resize(900, 600)
+
+        # 建立兩個視圖，並傳入「切換頁面」的函式作為參數。
+        self.view_a = SentryEyeWidget(switch_callback=self.go_to_dashboard)        
+        # 替換為我們剛剛貼入並改名的 DashboardWidget
+        # 這裡我們傳入了 self.go_to_eye 函式作為返回按鈕的回調
+        # type: ignore # 【技術鎮壓】忽略 Pylance 對 update_tooltip 的循環依賴警告
+        self.view_b = DashboardWidget(on_stats_change=lambda r, m: self.update_tooltip(r, m), switch_callback=self.go_to_eye)
+        # 把視圖加入（addWidget）容器中。
+        # 索引 0 = View A
+        self.container.addWidget(self.view_a)
+        # 索引 1 = View B
+        self.container.addWidget(self.view_b)
+        # [Task 9.4] 連接 Dashboard 的偏好設定訊號到 Eye
+        self.view_b.preferences_changed.connect(self.view_a.set_preferences)
+
+        # --- 改成呼叫 go_to_eye() 來初始化 ---
+        # 這會同時設定頁面並將視窗縮小為 130x130
+        self.go_to_eye()
+
+        # 啟動時直接顯示視窗
+        self.container.show()
+
+        # 設定容器視窗屬性以支援透明背景
+        self.container.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        # [修改] 移除 WindowStaysOnTopHint，不再強制置頂
+        self.container.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+
+    def go_to_dashboard(self):
+        """切換到 View B (展開)"""
+        # 1. 命令 View B 重新去後端拉取最新資料
+        self.view_b._reload_projects_from_backend()
+        # 2. 切換頁面
+        self.container.setCurrentIndex(1)
+        # 3. [新增] 展開視窗為後台尺寸
+        self.container.resize(900, 600)
+    
+    def go_to_eye(self):
+        """切換到 View A (縮微)"""
+        # 1. 切換頁面
+        self.container.setCurrentIndex(0)
+        # 2. [新增] 縮小視窗為眼球尺寸
+        self.container.resize(130, 130)
+
+    def toggle_window(self):
+        """切換視窗顯示狀態"""
+        if self.container.isVisible():
+            self.container.hide()
+        else:
+            self.container.show()
+            self.container.activateWindow()
+
+    def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            if self.console.isVisible():
-                # 如果看得到，就藏起來
-                self.console.hide()
-            else:
-                # 如果藏起來，就顯示並拉到最前
-                self.show_console()
+            self.toggle_window()
 
+    def _load_icon(self) -> QIcon:
+        """從 assets/icons/tray_icon.png 載入圖示"""
+        # 我們計算（calculate）專案根目錄位置 (往上找兩層：src -> root)
+        root = Path(__file__).resolve().parents[2]
+        icon_path = root / "assets" / "icons" / "tray_icon.png"
 
-# 這裡，我們用「def」來定義（define）應用程式的主入口點（main）。
-def main() -> None:
-    """應用程式進入點。"""
-    # 建立一個 QApplication 物件，這是所有 Qt 應用程式的核心。
+        # 我們用「if」檢查檔案是否存在
+        if icon_path.is_file():
+            return QIcon(str(icon_path))
+        
+        # 如果找不到，回傳系統預設圖示當作備案
+        return self.app.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+
+# --- 程式進入點 ---
+def main():
     app = QApplication(sys.argv)
-
-    # 關閉最後一個視窗時不要自動退出，交給「退出」選單控制
-    # 設定（setQuitOnLastWindowClosed）為 False，這樣關閉主視窗時應用程式才不會結束。
+    # 這是為了確保關閉視窗時不會直接殺死程式 (因為有 Tray)。
     app.setQuitOnLastWindowClosed(False)
-
-    # 建立（instantiate）我們剛剛寫好的 SentryTrayApp 物件。
-    tray_app = SentryTrayApp(app)
-    # 啟動（exec）應用程式的主事件迴圈，並把回傳的退出碼傳給系統（sys.exit）。
+    
+    # 啟動 v2 沙盒
+    sandbox = SentryTrayAppV2(app)
+    
     sys.exit(app.exec())
 
-
-# 這是 Python 標準的寫法：如果（if）這個檔案是直接執行的主程式...
 if __name__ == "__main__":
-    # 就呼叫（call）main 函式來啟動應用程式。
     main()
 
-    # -----------執行指令----------------  
-    # python -m src.tray.tray_app
-    #  ----------------------------------
-
-    # ============虛擬環境================
-    # .\.venv\Scripts\Activate
-    # ----------------------------------
+    #  啟動系統 python -m src.tray.v2_sandbox
