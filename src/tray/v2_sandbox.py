@@ -64,6 +64,74 @@ from PySide6.QtWidgets import (
 from src.backend import adapter
 
 # ==========================================
+#   [New] 直覺引導氣泡 (Status Bubble)
+# ==========================================
+class StatusBubble(QWidget):
+    """
+    懸浮在眼睛下方的對話氣泡。
+    - 支援淡入淡出
+    - 支援自動消失
+    - 視覺風格：半透明黑底 + 白字
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # 設定為子視窗，但無邊框
+        self.setWindowFlags(Qt.WindowType.SubWindow | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        
+        # 預設隱藏
+        self.hide()
+        
+        # --- 介面佈局 ---
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        
+        self.label = QLabel("提示訊息")
+        self.label.setStyleSheet("""
+            color: #FFFFFF;
+            font-weight: bold;
+            font-size: 11px;
+        """)
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.label)
+        
+        # --- 自動消失計時器 ---
+        self.fade_timer = QTimer(self)
+        self.fade_timer.setSingleShot(True)
+        self.fade_timer.timeout.connect(self.hide_bubble)
+
+    def show_message(self, text: str, duration: int = 3000):
+        """顯示訊息，並在 duration (毫秒) 後自動消失"""
+        self.label.setText(text)
+        self.adjustSize() # 自動調整大小以適應文字
+        self.show()
+        
+        # 如果有設定時間，就啟動倒數
+        if duration > 0:
+            self.fade_timer.start(duration)
+
+    def hide_bubble(self):
+        self.hide()
+
+    def paintEvent(self, event):
+        """繪製圓角半透明背景"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        rect = self.rect()
+        
+        # 半透明黑底
+        brush_color = QColor(0, 0, 0, 180)
+        painter.setBrush(QBrush(brush_color))
+        painter.setPen(Qt.PenStyle.NoPen)
+        
+        # 畫圓角矩形
+        painter.drawRoundedRect(rect, 10, 10)
+        
+        # (選配) 畫一個小三角形指向上面 (對話框的尾巴)
+        # 這裡先保持簡單圓角，以免計算太複雜
+
+# ==========================================
 #   View A: 哨兵之眼 (Sentry Eye) - 正式實作
 # ==========================================
 class SentryEyeWidget(QWidget):
@@ -109,6 +177,13 @@ class SentryEyeWidget(QWidget):
         self.phase = 0
         # [新增] 吞噬動畫計數器 (0 = 無動畫, >0 = 播放中)
         self.eating_frame = 0
+
+        # [新增] 初始化引導氣泡
+        # 我們把 self (眼睛) 傳進去當作 parent，這樣氣泡就會成為眼睛的子視窗
+        self.bubble = StatusBubble(self)
+        # 設定氣泡初始位置 (相對於眼睛左上角)
+        # 這裡先暫定 (10, 140)，也就是眼睛下方一點點
+        self.bubble.move(10, 140)
 
         # [新增] 瞳孔運動神經
         self.pupil_offset = QPoint(0, 0)       # 目前位置
@@ -193,6 +268,16 @@ class SentryEyeWidget(QWidget):
         # [設定] 設定為 1，表示這次眨完後，還要「再眨 1 次」(共 2 次)
         # 如果您想要單次眨眼，改成 0 即可
         self.blink_repeats = 1
+
+    def resizeEvent(self, event):
+        """當視窗大小改變時，調整氣泡位置"""
+        super().resizeEvent(event)
+        # 讓氣泡水平置中
+        if hasattr(self, 'bubble'):
+            bx = (self.width() - self.bubble.width()) // 2
+            # 放在高度的 85% 處 (眼睛下方)
+            by = int(self.height() * 0.85) 
+            self.bubble.move(bx, by)
         
     def paintEvent(self, event):
         """繪製精細版哨兵之眼 (v2.1: 中空機械眼 + 雷射邊框)"""
@@ -388,7 +473,7 @@ class SentryEyeWidget(QWidget):
             event.ignore()
 
     def dropEvent(self, event):
-        """處理放下事件：三層意圖過濾 (Layer 1~3) - Adapter 對接版"""
+        """處理放下事件：氣泡回饋版 (Status Bubble Integration)"""
         urls = event.mimeData().urls()
         if not urls:
             return
@@ -405,51 +490,51 @@ class SentryEyeWidget(QWidget):
                 self._execute_add_project(folder, target_file)
                 event.accept()
             else:
-                QMessageBox.warning(self, "錯誤", "我正在等待一個「檔案」作為寫入目標。")
+                # [氣泡] 錯誤提示
+                self.bubble.show_message("❌ 錯誤：請餵我「檔案」作為寫入目標！", 3000)
                 event.ignore()
             return
 
-        # --- [Layer 1] 舊雨判定 (交給 Adapter 判斷) ---
+        # --- [Layer 1] 舊雨判定 ---
         if path_obj.is_dir():
-            # 直接呼叫 Adapter 的新功能：檢查路徑是否已註冊
             match_proj = adapter.match_project_by_path(path_str)
 
-            # 若命中 -> 執行對應操作
             if match_proj:
                 if match_proj.status == "monitoring":
-                    # 狀態：監控中 -> 觸發手動更新
                     adapter.trigger_manual_update(match_proj.uuid)
-                    QMessageBox.information(self, "哨兵之眼", f"專案「{match_proj.name}」監控中。\n已觸發單次更新！")
+                    # [氣泡] 單次更新回饋
+                    self.bubble.show_message(f"✨ 專案「{match_proj.name}」\n已觸發單次更新！", 3000)
                 else:
-                    # 狀態：已停止 -> 啟動哨兵
                     adapter.toggle_project_status(match_proj.uuid)
-                    QMessageBox.information(self, "哨兵之眼", f"歡迎回來，{match_proj.name}。\n哨兵已啟動！")
+                    # [氣泡] 啟動回饋
+                    self.bubble.show_message(f"👁️ 歡迎回來，{match_proj.name}。\n哨兵已啟動！", 4000)
                 
                 event.accept()
-                return # [關鍵] 任務結束
+                return
 
-        # --- [Layer 2 & 3] 新專案處理 (維持原樣) ---
+        # --- [Layer 2 & 3] 新專案處理 ---
         if path_obj.is_dir():
             # Layer 2: 智慧預設
             default_file = self._find_default_output_file(path_obj)
             
             if default_file:
-                self._execute_add_project(str(path_obj), default_file)
+                # [氣泡] 預設檔命中提示 (在彈出輸入框前先給個提示)
+                self.bubble.show_message("✨ 已鎖定預設檔，準備啟動...", 2000)
+                # 這裡稍微延遲一下再彈出輸入框，讓氣泡能被看到
+                QTimer.singleShot(500, lambda: self._execute_add_project(str(path_obj), default_file))
             else:
                 # Layer 3: 飢餓模式
                 self.pending_folder = str(path_obj)
                 self.update() 
-                QMessageBox.information(self, "收到資料夾", 
-                                        f"已暫存專案路徑：\n{path_obj.name}\n\n"
-                                        "⚠️ 找不到預設的 readme.md。\n"
-                                        "👉 請現在「直接拖曳」您想寫入的 Markdown 檔案進來！")
+                # [氣泡] 引導提示 (顯示久一點：8秒)
+                self.bubble.show_message("🟠 收到資料夾！\n請再拖入「寫入檔」給我...", 8000)
             event.accept()
             
         elif path_obj.is_file():
             menu = QMenu(self)
             menu.setStyleSheet("QMenu { background-color: rgba(20, 20, 30, 240); color: white; border: 1px solid #00FFFF; }")
             action = QAction(f"⚡ 單次更新: {path_obj.name}", menu)
-            action.triggered.connect(lambda: QMessageBox.information(self, "開發中", "單次更新功能即將上線！"))
+            action.triggered.connect(lambda: self.bubble.show_message("🚧 功能開發中...", 2000))
             menu.addAction(action)
             if not menu.isEmpty():
                 menu.exec(QCursor.pos())
